@@ -1,19 +1,15 @@
-# Huddle
+# Huddle (fixed for Railway)
 
-Pocket-sized live chat rooms.
+`public/` is your original build, untouched, so it looks exactly the same.
+`server.js` is the missing backend: it serves `public/` and implements
+`/api/users`, `/api/rooms` and `/api/rooms/:slug/messages`. No dependencies.
 
-**People count now updates every 20 seconds.**
+## Deploy on Railway
+1. Put these files at the root of a GitHub repo (or `railway up` from this folder).
+2. Railway detects `package.json` and runs `npm start` (`node server.js`).
+   The server listens on Railway's `PORT` and `0.0.0.0`, which fixes the 502.
+3. Settings -> Networking -> Generate Domain.
+4. To keep chats across redeploys: add a Volume mounted at `/data`
+   and set the variable `DATA_DIR=/data`. Without it, data resets on each deploy.
 
-## Deploy on Railway / static host
-
-This is the production build of the frontend.
-
-- `index.html`
-- `assets/index-Cklpbby4.js` (main app, interval fixed to 20s)
-- `assets/index-DLUjAQq1.css`
-- `icon.svg`
-- `manifest.webmanifest`
-
-Note: the original Netlify version used serverless functions + a database for rooms/messages/users. This static build will need those APIs re-implemented or pointed at a backend if you want full functionality on Railway.
-
-Replace the placeholder JS file with the real one from the attached zip if needed.
+Health check: `/health`

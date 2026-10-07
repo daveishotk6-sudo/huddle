@@ -1,0 +1,13 @@
+{
+  "name": "huddle",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Huddle - pocket-sized live chat (static frontend + zero-dependency Node API)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
