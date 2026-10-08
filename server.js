@@ -16,9 +16,9 @@ const DB_FILE = path.join(DATA_DIR, "huddle.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const ROOT_DIR = __dirname;
 
-const ACTIVE_WINDOW_MS = 10 * 60 * 1000;
+const ACTIVE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_MESSAGES_PER_ROOM = 5000;
-const INITIAL_MESSAGES = 100;
+const INITIAL_MESSAGES = 200;
 
 // ---------- storage ----------
 let db = { nextUserId: 1, nextRoomId: 1, nextMessageId: 1, users: [], rooms: [], messages: [] };
@@ -180,10 +180,12 @@ async function handleApi(req, res, url) {
   if (parts[0] === "rooms" && parts.length === 1) {
     if (method === "GET") {
       const now = Date.now();
+      const globalActive = new Set();
       const list = db.rooms.map((r) => {
         const msgs = db.messages.filter((m) => m.roomId === r.id);
         const last = msgs[msgs.length - 1];
         const active = new Set(msgs.filter((m) => now - new Date(m.createdAt).getTime() < ACTIVE_WINDOW_MS).map((m) => m.userId));
+        for (const uid of active) globalActive.add(uid);
         return {
           ...publicRoom(r),
           activeCount: active.size,
@@ -191,6 +193,8 @@ async function handleApi(req, res, url) {
           _t: last ? new Date(last.createdAt).getTime() : new Date(r.createdAt).getTime(),
         };
       }).sort((a, b) => b._t - a._t).map(({ _t, ...r }) => r);
+      // Unique people across all rooms (prevents double-counting one user in multiple rooms)
+      list.activePeople = globalActive.size;
       return send(res, 200, list);
     }
     if (method === "POST") {
@@ -290,7 +294,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://localhost");
     if (url.pathname === "/health") return send(res, 200, { ok: true });
-    if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
+    if (url.pathname.startsWith("/api/") ) return await handleApi(req, res, url);
     return serveStatic(req, res, url);
   } catch (e) {
     if (e instanceof HttpError) return send(res, e.status, { error: e.message });
