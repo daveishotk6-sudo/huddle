@@ -13,6 +13,21 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet" />
     <title>Huddle — live chat in your pocket</title>
+    <script>
+      // Token refresher: if the server says 401, clear the saved profile and reload
+      (function () {
+        var orig = window.fetch;
+        window.fetch = function () {
+          return orig.apply(this, arguments).then(function (res) {
+            if (res.status === 401) {
+              try { localStorage.removeItem("huddle:profile"); } catch (e) {}
+              location.reload();
+            }
+            return res;
+          });
+        };
+      })();
+    </script>
     <script type="module" crossorigin src="/assets/index-Cklpbby4.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-DLUjAQq1.css">
   </head>
