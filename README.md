@@ -2,22 +2,26 @@
 
 Pocket-sized live chat rooms.
 
-- **Frontend**: original build (people count updates every **20 seconds**)
-- **Backend**: zero-dependency Node server (`server.js`) that serves the static files and implements `/api/users`, `/api/rooms`, `/api/rooms/:slug/messages`
-- Listens on `0.0.0.0:$PORT` so Railway works (no more 502)
+## What’s improved
+- **Unique people online**: one person in multiple rooms counts as 1 (no more double-counting)
+- **Longer chat history** on open (200 messages)
+- **People stay “online” for 15 minutes** after their last message
+- **Persistence across deploys**: set a Railway Volume + `DATA_DIR=/data`
+- Server listens on `0.0.0.0:$PORT` (no 502)
+- People count poll every 20s
 
 ## Deploy on Railway
-
-1. Connect this GitHub repo: https://github.com/daveishotk6-sudo/huddle
-2. Railway will detect `package.json` and run `npm start` → `node server.js`
-3. Generate a public domain under **Settings → Networking**
-4. (Recommended) Add a **Volume** mounted at `/data` and set variable `DATA_DIR=/data` so chats survive redeploys
+1. Connect this repo: https://github.com/daveishotk6-sudo/huddle
+2. Railway runs `node server.js` automatically
+3. Settings → Networking → Generate Domain
+4. **For chat history to survive redeploys**:
+   - Add a Volume, mount it at `/data`
+   - Add variable `DATA_DIR=/data`
 
 Health check: `/health`
 
 ## Local
-
 ```bash
 node server.js
-# open http://localhost:3000
+# http://localhost:3000
 ```
