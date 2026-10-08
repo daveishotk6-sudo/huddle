@@ -193,8 +193,9 @@ async function handleApi(req, res, url) {
           _t: last ? new Date(last.createdAt).getTime() : new Date(r.createdAt).getTime(),
         };
       }).sort((a, b) => b._t - a._t).map(({ _t, ...r }) => r);
-      // Unique people across all rooms (prevents double-counting one user in multiple rooms)
-      return send(res, 200, { rooms: list, activePeople: globalActive.size });
+      // Note: frontend currently sums activeCount (can overcount same user in multiple rooms).
+      // globalActive.size is the true unique count; ready for a future frontend update.
+      return send(res, 200, list);
     }
     if (method === "POST") {
       rateLimit(req, "room", 10, 60 * 60 * 1000);
