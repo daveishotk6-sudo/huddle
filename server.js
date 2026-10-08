@@ -194,8 +194,7 @@ async function handleApi(req, res, url) {
         };
       }).sort((a, b) => b._t - a._t).map(({ _t, ...r }) => r);
       // Unique people across all rooms (prevents double-counting one user in multiple rooms)
-      list.activePeople = globalActive.size;
-      return send(res, 200, list);
+      return send(res, 200, { rooms: list, activePeople: globalActive.size });
     }
     if (method === "POST") {
       rateLimit(req, "room", 10, 60 * 60 * 1000);
