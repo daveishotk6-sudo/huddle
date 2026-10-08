@@ -1,4 +1,4 @@
-// Huddle server: serves the built frontend from ./public and implements the
+// Huddle server: serves the built frontend from ./public (or root) and implements the
 // /api/* endpoints the frontend expects. Zero dependencies.
 "use strict";
 
@@ -14,6 +14,7 @@ const HOST = "0.0.0.0";
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const DB_FILE = path.join(DATA_DIR, "huddle.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
+const ROOT_DIR = __dirname;
 
 const ACTIVE_WINDOW_MS = 10 * 60 * 1000;
 const MAX_MESSAGES_PER_ROOM = 5000;
@@ -247,17 +248,29 @@ const MIME = {
   ".png": "image/png", ".ico": "image/x-icon", ".txt": "text/plain; charset=utf-8", ".woff2": "font/woff2",
 };
 
+function resolveStatic(rel) {
+  // Prefer public/, fall back to repo root (for the original layout)
+  const candidates = [
+    path.normalize(path.join(PUBLIC_DIR, rel)),
+    path.normalize(path.join(ROOT_DIR, rel)),
+  ];
+  for (const file of candidates) {
+    if ((file.startsWith(PUBLIC_DIR) || file.startsWith(ROOT_DIR)) && fs.existsSync(file) && fs.statSync(file).isFile()) {
+      return file;
+    }
+  }
+  return null;
+}
+
 function serveStatic(req, res, url) {
   if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, { error: "Method not allowed." });
   let rel = decodeURIComponent(url.pathname);
-  let file = path.normalize(path.join(PUBLIC_DIR, rel));
-  if (!file.startsWith(PUBLIC_DIR)) return send(res, 403, { error: "Forbidden." });
   let isAsset = rel.startsWith("/assets/");
-  try {
-    if (!fs.statSync(file).isFile()) throw new Error();
-  } catch {
+  let file = resolveStatic(rel);
+  if (!file) {
     if (isAsset || path.extname(rel)) return send(res, 404, "Not found", { "Content-Type": "text/plain" });
-    file = path.join(PUBLIC_DIR, "index.html"); // SPA fallback (/r/:slug)
+    // SPA fallback
+    file = resolveStatic("/index.html") || path.join(PUBLIC_DIR, "index.html");
     isAsset = false;
   }
   const ext = path.extname(file).toLowerCase();
