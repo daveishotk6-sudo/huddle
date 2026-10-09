@@ -14,7 +14,6 @@
     <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet" />
     <title>Huddle — live chat in your pocket</title>
     <script>
-      // Token refresher: if the server says 401, clear the saved profile and reload
       (function () {
         var orig = window.fetch;
         window.fetch = function () {
@@ -30,6 +29,119 @@
     </script>
     <script type="module" crossorigin src="/assets/index-Cklpbby4.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index-DLUjAQq1.css">
+    <script>
+      (function () {
+        var lastSend = 0;
+        var COOLDOWN = 3000;
+        function getProfile() {
+          try { return JSON.parse(localStorage.getItem("huddle:profile") || "null"); } catch (e) { return null; }
+        }
+        function ensureStyles() {
+          if (document.getElementById("huddle-img-style")) return;
+          var s = document.createElement("style");
+          s.id = "huddle-img-style";
+          s.textContent = ".huddle-img-btn{flex:none;width:44px;height:44px;border-radius:50%;border:1.5px solid var(--line,#e6dfd0);background:var(--card,#fffdf8);font-size:20px;display:grid;place-items:center;cursor:pointer}.huddle-img-btn:active{transform:scale(.9)}.huddle-img-btn:disabled{opacity:.35}.bubble img.huddle-msg-img,.huddle-msg-img{max-width:min(240px,70vw);border-radius:14px;display:block;margin-top:4px}";
+          document.head.appendChild(s);
+        }
+        function renderImages(root) {
+          (root || document).querySelectorAll(".bubble").forEach(function (bubble) {
+            if (bubble.dataset.imgDone) return;
+            var text = bubble.textContent || "";
+            var m = text.match(/\[image:(\/uploads\/[a-zA-Z0-9._-]+)\]/);
+            if (!m) return;
+            bubble.dataset.imgDone = "1";
+            var url = m[1];
+            var clean = text.replace(m[0], "").trim();
+            bubble.textContent = clean;
+            var img = document.createElement("img");
+            img.className = "huddle-msg-img";
+            img.src = url;
+            img.alt = "image";
+            img.loading = "lazy";
+            bubble.appendChild(img);
+          });
+        }
+        function attachUploadButton() {
+          document.querySelectorAll(".composer").forEach(function (composer) {
+            if (composer.querySelector(".huddle-img-btn")) return;
+            var input = composer.querySelector(".input, textarea, input");
+            var send = composer.querySelector(".send");
+            if (!input || !send) return;
+            var btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "huddle-img-btn";
+            btn.title = "Send image";
+            btn.textContent = "📷";
+            var file = document.createElement("input");
+            file.type = "file";
+            file.accept = "image/png,image/jpeg,image/webp,image/gif,image/*";
+            file.setAttribute("capture", "environment");
+            file.style.display = "none";
+            btn.onclick = function () { file.click(); };
+            file.onchange = async function () {
+              var f = file.files && file.files[0];
+              file.value = "";
+              if (!f) return;
+              if (!/^image\//.test(f.type)) { alert("Please choose an image (PNG, JPEG, etc)."); return; }
+              if (f.size > 2.5 * 1024 * 1024) { alert("Image must be under 2.5MB."); return; }
+              if (Date.now() - lastSend < COOLDOWN) { alert("Wait a few seconds before sending again."); return; }
+              var profile = getProfile();
+              if (!profile || !profile.token) { alert("Set up your profile first."); return; }
+              btn.disabled = true;
+              try {
+                var dataUrl = await new Promise(function (resolve, reject) {
+                  var r = new FileReader();
+                  r.onload = function () { resolve(r.result); };
+                  r.onerror = reject;
+                  r.readAsDataURL(f);
+                });
+                var up = await fetch("/api/upload", {
+                  method: "POST",
+                  headers: { "content-type": "application/json", authorization: "Bearer " + profile.token },
+                  body: JSON.stringify({ dataUrl: dataUrl })
+                });
+                var uj = await up.json().catch(function () { return {}; });
+                if (!up.ok) throw new Error(uj.error || "Upload failed");
+                var slug = (location.pathname.match(/\/r\/([^/]+)/) || [])[1];
+                if (!slug) throw new Error("Open a room first.");
+                var caption = (input.value || "").trim();
+                var body = caption ? (caption + "\n[image:" + uj.url + "]") : ("[image:" + uj.url + "]");
+                var res = await fetch("/api/rooms/" + encodeURIComponent(slug) + "/messages", {
+                  method: "POST",
+                  headers: { "content-type": "application/json", authorization: "Bearer " + profile.token },
+                  body: JSON.stringify({ body: body, imageUrl: uj.url })
+                });
+                var jj = await res.json().catch(function () { return {}; });
+                if (!res.ok) throw new Error(jj.error || "Send failed");
+                lastSend = Date.now();
+                if (input.value !== undefined) input.value = "";
+                setTimeout(function () { renderImages(document); }, 800);
+              } catch (e) {
+                alert(e.message || "Could not send image");
+              } finally {
+                btn.disabled = false;
+              }
+            };
+            composer.insertBefore(btn, send);
+            composer.appendChild(file);
+          });
+        }
+        var origFetch = window.fetch;
+        window.fetch = function () {
+          var args = arguments;
+          return origFetch.apply(this, args).then(function (res) {
+            try {
+              var u = typeof args[0] === "string" ? args[0] : (args[0] && args[0].url) || "";
+              var opts = args[1] || {};
+              if (res.ok && opts.method === "POST" && /\/messages$/.test(u.split("?")[0])) lastSend = Date.now();
+            } catch (e) {}
+            return res;
+          });
+        };
+        ensureStyles();
+        setInterval(function () { ensureStyles(); attachUploadButton(); renderImages(document); }, 700);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
