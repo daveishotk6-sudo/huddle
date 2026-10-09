@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#1d1b16" />
+  <title>Huddle Admin</title>
+  <style>
+    :root { --bg:#1d1b16; --card:#2a2720; --ink:#f6f1e7; --muted:#a89f8e; --accent:#ff5a36; --line:#3d392f; --ok:#37b24d; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, sans-serif; background:var(--bg); color:var(--ink); min-height:100dvh; padding:20px 16px calc(20px + env(safe-area-inset-bottom)); }
+    h1 { font-size:24px; margin:0 0 4px; letter-spacing:-0.02em; }
+    .sub { color:var(--muted); font-size:14px; margin-bottom:20px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; margin-bottom:14px; }
+    label { display:block; font-size:12px; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); margin-bottom:6px; font-weight:600; }
+    input { width:100%; padding:12px 14px; border-radius:12px; border:1.5px solid var(--line); background:#1d1b16; color:var(--ink); font-size:16px; outline:none; }
+    input:focus { border-color:var(--accent); }
+    button { border:0; border-radius:999px; padding:12px 20px; font-size:15px; font-weight:700; cursor:pointer; }
+    .btn-primary { background:var(--accent); color:#fff; width:100%; margin-top:12px; }
+    .btn-danger { background:#c92a2a; color:#fff; padding:8px 14px; font-size:13px; }
+    .btn-ghost { background:transparent; color:var(--muted); border:1px solid var(--line); }
+    .row { display:flex; gap:10px; align-items:center; justify-content:space-between; }
+    .user { padding:12px 0; border-bottom:1px solid var(--line); }
+    .user:last-child { border-bottom:0; }
+    .handle { font-weight:700; }
+    .meta { color:var(--muted); font-size:13px; margin-top:2px; }
+    .err { color:#ff6b6b; font-size:14px; margin-top:8px; }
+    .ok { color:var(--ok); font-size:14px; margin-top:8px; }
+    .tag { display:inline-block; background:var(--accent); color:#fff; font-size:11px; font-weight:700; padding:2px 8px; border-radius:6px; margin-left:6px; vertical-align:middle; }
+    .hidden { display:none !important; }
+    .actions { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+  </style>
+</head>
+<body>
+  <h1>Huddle Admin</h1>
+  <p class="sub">Password-protected. Admin tag is auto-enabled on this account.</p>
+
+  <div id="login" class="card">
+    <label>Password</label>
+    <input id="pw" type="password" placeholder="Admin password" autocomplete="current-password" />
+    <button class="btn-primary" id="loginBtn">Log in</button>
+    <p id="loginErr" class="err hidden"></p>
+  </div>
+
+  <div id="panel" class="hidden">
+    <div class="card">
+      <div class="row">
+        <div>
+          <strong>Signed in as Admin</strong>
+          <span class="tag">Admin</span>
+          <div class="meta">Use this profile in chat to show the Admin tag</div>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn-ghost" id="useChat">Open chat as Admin</button>
+        <button class="btn-ghost" id="logout">Log out</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <label>Remove user (by handle, real name, or nickname)</label>
+      <input id="rmQuery" placeholder="e.g. coolguy or Jane" />
+      <button class="btn-primary" id="rmBtn" style="background:#c92a2a">Remove user</button>
+      <p id="rmMsg" class="hidden"></p>
+    </div>
+
+    <div class="card">
+      <div class="row" style="margin-bottom:8px">
+        <strong>Users</strong>
+        <button class="btn-ghost" id="refresh">Refresh</button>
+      </div>
+      <div id="list">Loading…</div>
+    </div>
+  </div>
+
+  <script>
+    const KEY = "huddle:profile";
+    let token = null;
+
+    function show(el, on) { el.classList.toggle("hidden", !on); }
+    function setMsg(el, text, ok) {
+      el.textContent = text || "";
+      el.className = ok ? "ok" : "err";
+      show(el, !!text);
+    }
+
+    async function api(path, opts = {}) {
+      const headers = { "content-type": "application/json", ...(opts.headers || {}) };
+      if (token) headers.authorization = "Bearer " + token;
+      const res = await fetch(path, { ...opts, headers });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Request failed");
+      return data;
+    }
+
+    async function login() {
+      const password = document.getElementById("pw").value;
+      const err = document.getElementById("loginErr");
+      try {
+        const data = await api("/api/admin/login", { method: "POST", body: JSON.stringify({ password }) });
+        token = data.token;
+        localStorage.setItem(KEY, JSON.stringify({
+          name: data.user.handle,
+          handle: data.user.handle,
+          realName: data.user.realName,
+          nicknames: data.user.nicknames,
+          color: data.user.color,
+          token: data.token,
+          isAdmin: true,
+        }));
+        show(document.getElementById("login"), false);
+        show(document.getElementById("panel"), true);
+        await loadUsers();
+      } catch (e) {
+        setMsg(err, e.message, false);
+      }
+    }
+
+    async function loadUsers() {
+      const list = document.getElementById("list");
+      try {
+        const users = await api("/api/admin/users");
+        if (!users.length) { list.innerHTML = "<p class='meta'>No users yet.</p>"; return; }
+        list.innerHTML = users.map(u => `
+          <div class="user">
+            <div class="row">
+              <div>
+                <div class="handle">${escapeHtml(u.handle)}</div>
+                <div class="meta">${escapeHtml(u.realName || "")}${u.nicknames ? " · " + escapeHtml(u.nicknames) : ""} · ${u.messageCount} msgs</div>
+              </div>
+              <button class="btn-danger" data-handle="${escapeAttr(u.handle)}">Remove</button>
+            </div>
+          </div>
+        `).join("");
+        list.querySelectorAll("button[data-handle]").forEach(btn => {
+          btn.onclick = () => removeUser(btn.getAttribute("data-handle"));
+        });
+      } catch (e) {
+        list.innerHTML = `<p class="err">${escapeHtml(e.message)}</p>`;
+      }
+    }
+
+    async function removeUser(query) {
+      const msg = document.getElementById("rmMsg");
+      if (!query) return;
+      if (!confirm('Remove "' + query + '"? Their name will be free again.')) return;
+      try {
+        const data = await api("/api/admin/users", { method: "DELETE", body: JSON.stringify({ query }) });
+        setMsg(msg, data.message || "Removed.", true);
+        document.getElementById("rmQuery").value = "";
+        await loadUsers();
+      } catch (e) {
+        setMsg(msg, e.message, false);
+      }
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    }
+    function escapeAttr(s) { return escapeHtml(s).replace(/'/g, "&#39;"); }
+
+    document.getElementById("loginBtn").onclick = login;
+    document.getElementById("pw").addEventListener("keydown", e => { if (e.key === "Enter") login(); });
+    document.getElementById("rmBtn").onclick = () => removeUser(document.getElementById("rmQuery").value.trim());
+    document.getElementById("refresh").onclick = loadUsers;
+    document.getElementById("logout").onclick = () => {
+      token = null;
+      try { localStorage.removeItem(KEY); } catch (e) {}
+      location.reload();
+    };
+    document.getElementById("useChat").onclick = () => { location.href = "/"; };
+  </script>
+</body>
+</html>
