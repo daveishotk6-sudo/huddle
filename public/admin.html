@@ -58,6 +58,13 @@
     </div>
 
     <div class="card">
+      <label>Global chat wipe</label>
+      <p class="meta" style="margin:0 0 10px">Deletes every message and restores the 5 default rooms. Users are kept.</p>
+      <button class="btn-primary" id="wipeBtn" style="background:#c92a2a;margin-top:0">Wipe all chats</button>
+      <p id="wipeMsg" class="hidden"></p>
+    </div>
+
+    <div class="card">
       <label>Remove user (by handle, real name, or nickname)</label>
       <input id="rmQuery" placeholder="e.g. coolguy or Jane" />
       <button class="btn-primary" id="rmBtn" style="background:#c92a2a">Remove user</button>
@@ -162,6 +169,17 @@
     document.getElementById("loginBtn").onclick = login;
     document.getElementById("pw").addEventListener("keydown", e => { if (e.key === "Enter") login(); });
     document.getElementById("rmBtn").onclick = () => removeUser(document.getElementById("rmQuery").value.trim());
+    document.getElementById("wipeBtn").onclick = async () => {
+      const msg = document.getElementById("wipeMsg");
+      if (!confirm("Wipe ALL chats and restore default rooms? This cannot be undone.")) return;
+      if (!confirm("Really wipe everything? Last chance.")) return;
+      try {
+        const data = await api("/api/admin/wipe", { method: "POST", body: "{}" });
+        setMsg(msg, data.message || "Wiped.", true);
+      } catch (e) {
+        setMsg(msg, e.message, false);
+      }
+    };
     document.getElementById("refresh").onclick = loadUsers;
     document.getElementById("logout").onclick = () => {
       token = null;
