@@ -1,1 +1,60 @@
-<placeholder>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#f6f1e7" />
+<title>Huddle</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet" />
+<link rel="icon" href="/icon.svg" type="image/svg+xml" />
+<script>try{if(localStorage.getItem("huddle:theme")==="dark")document.documentElement.setAttribute("data-theme","dark")}catch(e){}</script>
+<style>
+html[data-theme=dark]{color-scheme:dark}
+html[data-theme=dark] body,html[data-theme=dark] #root{background:#12110e!important;color:#f0ebe3!important}
+html[data-theme=dark] .shell,html[data-theme=dark] .sidebar,html[data-theme=dark] .room-pane,html[data-theme=dark] .chat,html[data-theme=dark] .composer,html[data-theme=dark] .room-row,html[data-theme=dark] .panel,html[data-theme=dark] .card,html[data-theme=dark] header,html[data-theme=dark] .topbar{background:#1c1a16!important;color:#f0ebe3!important;border-color:#2e2b24!important}
+html[data-theme=dark] .bubble{background:#2a2720!important;color:#f0ebe3!important}
+html[data-theme=dark] .bubble.mine{background:#3d2a22!important}
+html[data-theme=dark] input,html[data-theme=dark] textarea,html[data-theme=dark] .input{background:#12110e!important;color:#f0ebe3!important;border-color:#3d392f!important}
+.huddle-theme-btn,.huddle-games-btn{position:fixed;z-index:9999;width:40px;height:40px;border-radius:50%;border:1.5px solid #e6dfd0;background:#fffdf8;font-size:18px;display:grid;place-items:center;cursor:pointer;box-shadow:0 2px 10px rgba(0,0,0,.08)}
+.huddle-theme-btn{top:max(12px,env(safe-area-inset-top));right:12px}
+.huddle-games-btn{top:max(12px,env(safe-area-inset-top));right:60px}
+html[data-theme=dark] .huddle-theme-btn,html[data-theme=dark] .huddle-games-btn{background:#2a2720;border-color:#3d392f;color:#f0ebe3}
+.huddle-img-btn{flex:none;width:44px;height:44px;border-radius:50%;border:1.5px solid #e6dfd0;background:#fffdf8;font-size:18px;display:grid;place-items:center;cursor:pointer}
+html[data-theme=dark] .huddle-img-btn{background:#2a2720;border-color:#3d392f}
+.huddle-msg-img{max-width:min(240px,70vw);border-radius:14px;display:block;margin-top:4px}
+.huddle-panel{position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;justify-content:center}
+.huddle-panel-card{width:min(420px,100%);max-height:85vh;overflow:auto;background:#fffdf8;border-radius:20px 20px 0 0;padding:16px 16px 28px;color:#1c1a16}
+html[data-theme=dark] .huddle-panel-card{background:#1c1a16;color:#f0ebe3}
+.huddle-panel-card h2{margin:0 0 8px;font-family:Bricolage Grotesque,sans-serif}
+.huddle-panel-card .close{float:right;border:0;background:transparent;font-size:22px;cursor:pointer;color:inherit}
+.huddle-game-list{display:flex;flex-direction:column;gap:8px;margin:12px 0}
+.huddle-game-btn{display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:14px;border:1.5px solid #e6dfd0;background:#fff;cursor:pointer;font-size:15px;text-align:left}
+html[data-theme=dark] .huddle-game-btn{background:#2a2720;border-color:#3d392f;color:#f0ebe3}
+.huddle-open-game{padding:10px;border-radius:12px;border:1px solid #e6dfd0;margin-top:8px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+html[data-theme=dark] .huddle-open-game{border-color:#3d392f}
+.huddle-open-game button{border:0;background:#ff5a36;color:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;font-weight:600}
+.huddle-board{position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;padding:12px}
+.huddle-board-card{width:min(360px,100%);background:#fffdf8;border-radius:18px;padding:16px;color:#1c1a16}
+html[data-theme=dark] .huddle-board-card{background:#1c1a16;color:#f0ebe3}
+.ttt-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:12px 0}
+.ttt-cell{aspect-ratio:1;border-radius:12px;border:1.5px solid #e6dfd0;background:#fff;font-size:28px;font-weight:700;cursor:pointer}
+html[data-theme=dark] .ttt-cell{background:#2a2720;border-color:#3d392f;color:#f0ebe3}
+.c4-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin:12px 0}
+.c4-cell{aspect-ratio:1;border-radius:50%;border:1.5px solid #e6dfd0;background:#eee}
+html[data-theme=dark] .c4-cell{background:#2a2720;border-color:#3d392f}
+.c4-cell.H{background:#ff5a36}.c4-cell.G{background:#1c7ed6}
+.c4-cols{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.c4-cols button{border:0;background:#e6dfd0;border-radius:8px;padding:6px 0;cursor:pointer;font-size:12px}
+html[data-theme=dark] .c4-cols button{background:#3d392f;color:#f0ebe3}
+.rps-row{display:flex;gap:8px;justify-content:center;margin:12px 0}
+.rps-row button{border:1.5px solid #e6dfd0;background:#fff;border-radius:14px;padding:12px 14px;font-size:28px;cursor:pointer}
+html[data-theme=dark] .rps-row button{background:#2a2720;border-color:#3d392f}
+.huddle-status{font-size:13px;opacity:.8;margin-bottom:8px}
+</style>
+<script>(function(){var o=window.fetch;window.fetch=function(){return o.apply(this,arguments).then(function(res){if(res.status===401){try{localStorage.removeItem("huddle:profile")}catch(e){}location.reload()}return res})}})();</script>
+<script type="module" crossorigin src="/assets/index-Cklpbby4.js"></script>
+<link rel="stylesheet" crossorigin href="/assets/index-DLUjAQq1.css">
+<script src="/games.js"></script>
+</head>
+<body><div id="root"></div></body>
+</html>
