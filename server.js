@@ -1,8 +1,8 @@
-// Huddle server: serves the built frontend from ./public (or root) and implements the
-// /api/* endpoints the frontend expects. Zero dependencies.
+// Huddle server — zero deps. AI room via OpenRouter, 2-day image cleanup.
 "use strict";
 
 const http = require("node:http");
+const https = require("node:https");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
@@ -15,31 +15,55 @@ const PUBLIC_DIR = path.join(__dirname, "public");
 const ROOT_DIR = __dirname;
 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Unauthorized601";
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
+const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
 const SEND_COOLDOWN_MS = 3000;
 const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
 const MAX_IMAGE_BYTES = 2.5 * 1024 * 1024;
+const IMAGE_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000;
 const ACTIVE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_MESSAGES_PER_ROOM = 5000;
 const INITIAL_MESSAGES = 200;
 
+const DEFAULT_ROOMS = [
+  ["General", "💬", "Anything goes"],
+  ["Food", "🍕", "What are you eating?"],
+  ["Movies & TV", "🎬", "What are you watching?"],
+  ["Tech", "💻", "Gadgets, code, and everything in between"],
+  ["Pets", "🐶", "Show off your best friend"],
+  ["AI", "🤖", "Chat with AI — ask anything"],
+];
+
 let db = { nextUserId: 1, nextRoomId: 1, nextMessageId: 1, users: [], rooms: [], messages: [] };
 
 function load() {
-  try {
-    db = { ...db, ...JSON.parse(fs.readFileSync(DB_FILE, "utf8")) };
-  } catch (e) {
-    if (e.code !== "ENOENT") console.error("Could not read db, starting fresh:", e.message);
+  try { db = { ...db, ...JSON.parse(fs.readFileSync(DB_FILE, "utf8")) }; }
+  catch (e) { if (e.code !== "ENOENT") console.error("Could not read db:", e.message); }
+  ensureDefaultRooms();
+  ensureAiUser();
+  saveSoon();
+}
+
+function ensureDefaultRooms() {
+  for (const [name, emoji, description] of DEFAULT_ROOMS) {
+    if (!db.rooms.some((r) => r.name.toLowerCase() === name.toLowerCase() || r.slug === slugify(name))) {
+      createRoom(name, emoji, description);
+    }
   }
-  if (db.rooms.length === 0) {
-    [
-      ["General", "💬", "Anything goes"],
-      ["Food", "🍕", "What are you eating?"],
-      ["Movies & TV", "🎬", "What are you watching?"],
-      ["Tech", "💻", "Gadgets, code, and everything in between"],
-      ["Pets", "🐶", "Show off your best friend"],
-    ].forEach(([name, emoji, description]) => createRoom(name, emoji, description));
-    saveSoon();
+}
+
+function ensureAiUser() {
+  let ai = db.users.find((u) => u.isAI);
+  if (!ai) {
+    db.users = db.users.filter((u) => u.handle.toLowerCase() !== "ai");
+    ai = {
+      id: db.nextUserId++, handle: "AI", realName: "Assistant", nicknames: "bot",
+      color: "#7048e8", tokenHash: hash(crypto.randomBytes(32).toString("base64url")),
+      isAdmin: false, isAI: true, createdAt: new Date().toISOString(),
+    };
+    db.users.push(ai);
   }
+  return ai;
 }
 
 let saveTimer = null;
@@ -52,17 +76,29 @@ function saveSoon() {
       const tmp = DB_FILE + ".tmp";
       fs.writeFileSync(tmp, JSON.stringify(db));
       fs.renameSync(tmp, DB_FILE);
-    } catch (e) {
-      console.error("Save failed:", e.message);
-    }
+    } catch (e) { console.error("Save failed:", e.message); }
   }, 500);
 }
 function flush() {
   if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+  try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(DB_FILE, JSON.stringify(db)); }
+  catch (e) { console.error("Save failed:", e.message); }
+}
+
+function cleanupOldImages() {
   try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(DB_FILE, JSON.stringify(db));
-  } catch (e) { console.error("Save failed:", e.message); }
+    if (!fs.existsSync(UPLOAD_DIR)) return;
+    const now = Date.now();
+    let removed = 0;
+    for (const name of fs.readdirSync(UPLOAD_DIR)) {
+      const file = path.join(UPLOAD_DIR, name);
+      try {
+        const st = fs.statSync(file);
+        if (st.isFile() && now - st.mtimeMs > IMAGE_MAX_AGE_MS) { fs.unlinkSync(file); removed++; }
+      } catch {}
+    }
+    if (removed) console.log("Cleaned", removed, "old image(s)");
+  } catch (e) { console.error("Image cleanup failed:", e.message); }
 }
 
 const COLORS = ["#ff6b6b", "#f59f00", "#37b24d", "#1c7ed6", "#7048e8", "#d6336c", "#0ca678", "#e8590c"];
@@ -91,14 +127,14 @@ const publicRoom = (r) => ({ id: r.id, slug: r.slug, name: r.name, emoji: r.emoj
 
 function publicMessage(m) {
   const u = db.users.find((x) => x.id === m.userId);
-  const isAdmin = !!(u && u.isAdmin);
   return {
     id: m.id, roomId: m.roomId, userId: m.userId,
     author: u ? u.handle : (m.author || "deleted"),
     realName: u ? u.realName : (m.realName || ""),
     nicknames: u ? u.nicknames : (m.nicknames || ""),
     color: u ? u.color : (m.color || "#7a7366"),
-    isAdmin,
+    isAdmin: !!(u && u.isAdmin),
+    isAI: !!(u && u.isAI),
     body: m.body,
     imageUrl: m.imageUrl || null,
     createdAt: m.createdAt,
@@ -159,11 +195,7 @@ function readJson(req) {
 
 function send(res, status, body, headers = {}) {
   const data = typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body);
-  res.writeHead(status, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Cache-Control": "no-store",
-    ...headers,
-  });
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...headers });
   res.end(data);
 }
 
@@ -178,6 +210,61 @@ function findUserByName(query) {
   ) || null;
 }
 
+function openRouterChat(messages) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify({ model: OPENROUTER_MODEL, messages, max_tokens: 800, temperature: 0.7 });
+    const req = https.request({
+      hostname: "openrouter.ai", path: "/api/v1/chat/completions", method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer " + OPENROUTER_API_KEY,
+        "HTTP-Referer": "https://huddle.app",
+        "X-Title": "Huddle AI Chat",
+        "Content-Length": Buffer.byteLength(payload),
+      },
+    }, (res) => {
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => {
+        try {
+          const data = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          if (data.error) return reject(new Error(data.error.message || "AI error"));
+          const text = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+          if (!text) return reject(new Error("Empty AI response"));
+          resolve(String(text).slice(0, 2000));
+        } catch { reject(new Error("Bad AI response")); }
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(45000, () => { req.destroy(); reject(new Error("AI timed out")); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+async function replyAsAi(room) {
+  if (!OPENROUTER_API_KEY) {
+    const ai = ensureAiUser();
+    const m = { id: db.nextMessageId++, roomId: room.id, userId: ai.id, body: "AI is not configured. Set OPENROUTER_API_KEY on Railway.", imageUrl: null, createdAt: new Date().toISOString() };
+    db.messages.push(m); saveSoon(); return m;
+  }
+  const ai = ensureAiUser();
+  const recent = db.messages.filter((m) => m.roomId === room.id).slice(-12).map((m) => {
+    const u = db.users.find((x) => x.id === m.userId);
+    return { role: (u && u.isAI) ? "assistant" : "user", content: (m.body || "").slice(0, 500) };
+  }).filter((m) => m.content);
+  const system = { role: "system", content: "You are the Huddle AI assistant in a casual group chat. Keep replies concise, friendly, and helpful. Short paragraphs." };
+  try {
+    const text = await openRouterChat([system].concat(recent));
+    const m = { id: db.nextMessageId++, roomId: room.id, userId: ai.id, body: text, imageUrl: null, createdAt: new Date().toISOString() };
+    db.messages.push(m); saveSoon(); return m;
+  } catch (e) {
+    console.error("AI reply failed:", e.message);
+    const m = { id: db.nextMessageId++, roomId: room.id, userId: ai.id, body: "Sorry — I couldn't reply just now. Try again in a moment.", imageUrl: null, createdAt: new Date().toISOString() };
+    db.messages.push(m); saveSoon(); return m;
+  }
+}
+
 async function handleApi(req, res, url) {
   const parts = url.pathname.split("/").filter(Boolean).slice(1).map(decodeURIComponent);
   const method = req.method;
@@ -189,12 +276,11 @@ async function handleApi(req, res, url) {
     const color = COLORS.includes(b.color) ? b.color : COLORS[Math.floor(Math.random() * COLORS.length)];
     if (handle.length < 2) throw new HttpError(400, "Pick a name with at least 2 characters.");
     if (realName.length < 2) throw new HttpError(400, "Please enter your real name.");
-    if (db.users.some((u) => u.handle.toLowerCase() === handle.toLowerCase()))
-      throw new HttpError(409, "That name is already taken — try another.");
+    if (handle.toLowerCase() === "ai" || handle.toLowerCase() === "admin") throw new HttpError(409, "That name is reserved.");
+    if (db.users.some((u) => u.handle.toLowerCase() === handle.toLowerCase())) throw new HttpError(409, "That name is already taken — try another.");
     const token = crypto.randomBytes(32).toString("base64url");
-    const user = { id: db.nextUserId++, handle, realName, nicknames, color, tokenHash: hash(token), isAdmin: false, createdAt: new Date().toISOString() };
-    db.users.push(user);
-    saveSoon();
+    const user = { id: db.nextUserId++, handle, realName, nicknames, color, tokenHash: hash(token), isAdmin: false, isAI: false, createdAt: new Date().toISOString() };
+    db.users.push(user); saveSoon();
     return send(res, 201, { user: { id: user.id, handle, realName, nicknames, color, isAdmin: false }, token });
   }
 
@@ -206,47 +292,21 @@ async function handleApi(req, res, url) {
     if (!admin) {
       db.users = db.users.filter((u) => u.handle.toLowerCase() !== "admin");
       const token = crypto.randomBytes(32).toString("base64url");
-      admin = {
-        id: db.nextUserId++,
-        handle: "Admin",
-        realName: "Administrator",
-        nicknames: "admin",
-        color: "#ff5a36",
-        tokenHash: hash(token),
-        isAdmin: true,
-        createdAt: new Date().toISOString(),
-      };
-      db.users.push(admin);
-      saveSoon();
-      return send(res, 200, {
-        token,
-        user: { id: admin.id, handle: admin.handle, realName: admin.realName, nicknames: admin.nicknames, color: admin.color, isAdmin: true },
-      });
+      admin = { id: db.nextUserId++, handle: "Admin", realName: "Administrator", nicknames: "admin", color: "#ff5a36", tokenHash: hash(token), isAdmin: true, isAI: false, createdAt: new Date().toISOString() };
+      db.users.push(admin); saveSoon();
+      return send(res, 200, { token: token, user: { id: admin.id, handle: admin.handle, realName: admin.realName, nicknames: admin.nicknames, color: admin.color, isAdmin: true } });
     }
     const token = crypto.randomBytes(32).toString("base64url");
-    admin.tokenHash = hash(token);
-    admin.isAdmin = true;
-    saveSoon();
-    return send(res, 200, {
-      token,
-      user: { id: admin.id, handle: admin.handle, realName: admin.realName, nicknames: admin.nicknames, color: admin.color, isAdmin: true },
-    });
+    admin.tokenHash = hash(token); admin.isAdmin = true; saveSoon();
+    return send(res, 200, { token: token, user: { id: admin.id, handle: admin.handle, realName: admin.realName, nicknames: admin.nicknames, color: admin.color, isAdmin: true } });
   }
 
   if (parts[0] === "admin" && parts[1] === "users" && parts.length === 2 && method === "GET") {
     authAdmin(req);
-    const list = db.users
-      .filter((u) => !u.isAdmin)
-      .map((u) => ({
-        id: u.id,
-        handle: u.handle,
-        realName: u.realName,
-        nicknames: u.nicknames,
-        color: u.color,
-        createdAt: u.createdAt,
-        messageCount: db.messages.filter((m) => m.userId === u.id).length,
-      }))
-      .sort((a, b) => a.handle.localeCompare(b.handle));
+    const list = db.users.filter((u) => !u.isAdmin && !u.isAI).map((u) => ({
+      id: u.id, handle: u.handle, realName: u.realName, nicknames: u.nicknames, color: u.color, createdAt: u.createdAt,
+      messageCount: db.messages.filter((m) => m.userId === u.id).length,
+    })).sort((a, b) => a.handle.localeCompare(b.handle));
     return send(res, 200, list);
   }
 
@@ -257,39 +317,35 @@ async function handleApi(req, res, url) {
     const target = findUserByName(query);
     if (!target) throw new HttpError(404, "No user found with that name or nickname.");
     if (target.isAdmin) throw new HttpError(400, "Cannot remove the admin account.");
+    if (target.isAI) throw new HttpError(400, "Cannot remove the AI account.");
     const removedHandle = target.handle;
     db.users = db.users.filter((u) => u.id !== target.id);
     for (const m of db.messages) {
       if (m.userId === target.id) {
-        m.author = removedHandle;
-        m.realName = target.realName;
-        m.nicknames = target.nicknames;
-        m.color = target.color;
-        m.userId = null;
+        m.author = removedHandle; m.realName = target.realName; m.nicknames = target.nicknames; m.color = target.color; m.userId = null;
       }
     }
     saveSoon();
-    return send(res, 200, { ok: true, removed: removedHandle, message: `"${removedHandle}" removed. That name is free again.` });
+    return send(res, 200, { ok: true, removed: removedHandle, message: '"' + removedHandle + '" removed. That name is free again.' });
   }
 
   if (parts[0] === "admin" && parts[1] === "wipe" && parts.length === 2 && method === "POST") {
     authAdmin(req);
     rateLimit(req, "admin-wipe", 3, 60 * 60 * 1000);
-    db.messages = [];
-    db.nextMessageId = 1;
-    db.rooms = [];
-    db.nextRoomId = 1;
-    [
-      ["General", "💬", "Anything goes"],
-      ["Food", "🍕", "What are you eating?"],
-      ["Movies & TV", "🎬", "What are you watching?"],
-      ["Tech", "💻", "Gadgets, code, and everything in between"],
-      ["Pets", "🐶", "Show off your best friend"],
-    ].forEach(([name, emoji, description]) => createRoom(name, emoji, description));
+    db.messages = []; db.nextMessageId = 1; db.rooms = []; db.nextRoomId = 1;
+    for (const row of DEFAULT_ROOMS) createRoom(row[0], row[1], row[2]);
+    ensureAiUser();
+    try {
+      if (fs.existsSync(UPLOAD_DIR)) {
+        for (const name of fs.readdirSync(UPLOAD_DIR)) {
+          try { fs.unlinkSync(path.join(UPLOAD_DIR, name)); } catch (e) {}
+        }
+      }
+    } catch (e) {}
     saveSoon();
     return send(res, 200, {
       ok: true,
-      message: "All chats wiped. Default rooms restored. Users were kept.",
+      message: "All chats wiped (including AI). Default rooms + AI restored. Users kept.",
       rooms: db.rooms.map(publicRoom),
     });
   }
@@ -305,10 +361,8 @@ async function handleApi(req, res, url) {
         chunks.push(c);
       });
       req.on("end", () => {
-        try {
-          const v = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-          resolve(v && typeof v === "object" ? v : {});
-        } catch { reject(new HttpError(400, "Invalid request.")); }
+        try { const v = JSON.parse(Buffer.concat(chunks).toString("utf8")); resolve(v && typeof v === "object" ? v : {}); }
+        catch (e) { reject(new HttpError(400, "Invalid request.")); }
       });
       req.on("error", reject);
     });
@@ -319,9 +373,9 @@ async function handleApi(req, res, url) {
     const buf = Buffer.from(m[2], "base64");
     if (buf.length > MAX_IMAGE_BYTES) throw new HttpError(413, "Image too large (max ~2.5MB).");
     fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-    const name = `${Date.now()}-${crypto.randomBytes(6).toString("hex")}.${ext === "jpeg" ? "jpg" : ext}`;
+    const name = Date.now() + "-" + crypto.randomBytes(6).toString("hex") + "." + (ext === "jpeg" ? "jpg" : ext);
     fs.writeFileSync(path.join(UPLOAD_DIR, name), buf);
-    return send(res, 201, { url: `/uploads/${name}` });
+    return send(res, 201, { url: "/uploads/" + name });
   }
 
   if (parts[0] === "rooms" && parts.length === 1) {
@@ -332,12 +386,12 @@ async function handleApi(req, res, url) {
         const last = msgs[msgs.length - 1];
         const active = new Set(msgs.filter((m) => now - new Date(m.createdAt).getTime() < ACTIVE_WINDOW_MS).map((m) => m.userId).filter(Boolean));
         return {
-          ...publicRoom(r),
+          id: r.id, slug: r.slug, name: r.name, emoji: r.emoji, description: r.description,
           activeCount: active.size,
           lastMessage: last ? { author: publicMessage(last).author, body: last.body, createdAt: last.createdAt } : null,
           _t: last ? new Date(last.createdAt).getTime() : new Date(r.createdAt).getTime(),
         };
-      }).sort((a, b) => b._t - a._t).map(({ _t, ...r }) => r);
+      }).sort((a, b) => b._t - a._t).map((r) => { const x = Object.assign({}, r); delete x._t; return x; });
       return send(res, 200, list);
     }
     if (method === "POST") {
@@ -346,12 +400,11 @@ async function handleApi(req, res, url) {
       const name = clean(b.name, 40), description = clean(b.description, 120);
       const emoji = clean(b.emoji, 8) || "💬";
       if (name.length < 2) throw new HttpError(400, "Room name must be at least 2 characters.");
+      if (name.toLowerCase() === "ai") throw new HttpError(409, "AI room already exists.");
       if (db.rooms.length >= 500) throw new HttpError(400, "Too many rooms already.");
-      if (db.rooms.some((r) => r.name.toLowerCase() === name.toLowerCase()))
-        throw new HttpError(409, "A room with that name already exists.");
-      const room = createRoom(name, emoji, description);
-      saveSoon();
-      return send(res, 201, { ...publicRoom(room), activeCount: 0, lastMessage: null });
+      if (db.rooms.some((r) => r.name.toLowerCase() === name.toLowerCase())) throw new HttpError(409, "A room with that name already exists.");
+      const room = createRoom(name, emoji, description); saveSoon();
+      return send(res, 201, { id: room.id, slug: room.slug, name: room.name, emoji: room.emoji, description: room.description, activeCount: 0, lastMessage: null });
     }
   }
 
@@ -367,30 +420,31 @@ async function handleApi(req, res, url) {
     }
     if (method === "POST") {
       const user = authUser(req);
+      if (user.isAI) throw new HttpError(403, "AI cannot post as a user.");
       const now = Date.now();
       const last = lastSendAt.get(user.id) || 0;
       if (now - last < SEND_COOLDOWN_MS) {
         const wait = Math.ceil((SEND_COOLDOWN_MS - (now - last)) / 1000);
-        throw new HttpError(429, `Wait ${wait}s before sending again.`);
+        throw new HttpError(429, "Wait " + wait + "s before sending again.");
       }
       rateLimit(req, "send", 40, 60 * 1000);
       const b = await readJson(req);
       let body = typeof b.body === "string" ? b.body.replace(/\r\n?/g, "\n").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").trim().slice(0, 1000) : "";
       let imageUrl = null;
-      if (typeof b.imageUrl === "string" && b.imageUrl.startsWith("/uploads/")) {
-        imageUrl = b.imageUrl.slice(0, 200);
-      }
+      if (typeof b.imageUrl === "string" && b.imageUrl.startsWith("/uploads/")) imageUrl = b.imageUrl.slice(0, 200);
       if (!body && !imageUrl) throw new HttpError(400, "Message can't be empty.");
       lastSendAt.set(user.id, now);
-      const m = { id: db.nextMessageId++, roomId: room.id, userId: user.id, body, imageUrl, createdAt: new Date().toISOString() };
-      db.messages.push(m);
+      const msg = { id: db.nextMessageId++, roomId: room.id, userId: user.id, body: body, imageUrl: imageUrl, createdAt: new Date().toISOString() };
+      db.messages.push(msg);
       const mine = db.messages.filter((x) => x.roomId === room.id);
       if (mine.length > MAX_MESSAGES_PER_ROOM) {
         const drop = new Set(mine.slice(0, mine.length - MAX_MESSAGES_PER_ROOM).map((x) => x.id));
         db.messages = db.messages.filter((x) => !drop.has(x.id));
       }
       saveSoon();
-      return send(res, 201, publicMessage(m));
+      const isAiRoom = room.slug === "ai" || room.name.toLowerCase() === "ai";
+      if (isAiRoom && body) setImmediate(function () { replyAsAi(room).catch(function (e) { console.error(e); }); });
+      return send(res, 201, publicMessage(msg));
     }
   }
 
@@ -404,14 +458,9 @@ const MIME = {
 };
 
 function resolveStatic(rel) {
-  const candidates = [
-    path.normalize(path.join(PUBLIC_DIR, rel)),
-    path.normalize(path.join(ROOT_DIR, rel)),
-  ];
+  const candidates = [path.normalize(path.join(PUBLIC_DIR, rel)), path.normalize(path.join(ROOT_DIR, rel))];
   for (const file of candidates) {
-    if ((file.startsWith(PUBLIC_DIR) || file.startsWith(ROOT_DIR)) && fs.existsSync(file) && fs.statSync(file).isFile()) {
-      return file;
-    }
+    if ((file.startsWith(PUBLIC_DIR) || file.startsWith(ROOT_DIR)) && fs.existsSync(file) && fs.statSync(file).isFile()) return file;
   }
   return null;
 }
@@ -428,11 +477,7 @@ function serveStatic(req, res, url) {
     isAsset = false;
   }
   const ext = path.extname(file).toLowerCase();
-  const headers = {
-    "Content-Type": MIME[ext] || "application/octet-stream",
-    "Cache-Control": isAsset ? "public, max-age=31536000, immutable" : "no-cache",
-  };
-  res.writeHead(200, headers);
+  res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream", "Cache-Control": isAsset ? "public, max-age=31536000, immutable" : "no-cache" });
   if (req.method === "HEAD") return res.end();
   fs.createReadStream(file).pipe(res);
 }
@@ -466,7 +511,10 @@ server.keepAliveTimeout = 65 * 1000;
 server.headersTimeout = 66 * 1000;
 
 load();
-server.listen(PORT, HOST, () => console.log(`Huddle listening on http://${HOST}:${PORT} (data: ${DB_FILE})`));
+cleanupOldImages();
+setInterval(cleanupOldImages, 60 * 60 * 1000).unref();
+
+server.listen(PORT, HOST, () => console.log("Huddle listening on http://" + HOST + ":" + PORT + " (data: " + DB_FILE + ")"));
 
 function shutdown() { flush(); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); }
 process.on("SIGTERM", shutdown);
