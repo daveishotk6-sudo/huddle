@@ -38,32 +38,32 @@ function checkConnect4(board) {
 }
 function applyMove(game, userId, move) {
   if (game.type === "tictactoe") {
-    if (game.turn !== userId) throw new HttpError(400, "Not your turn.");
+    if (Number(game.turn) !== Number(userId)) throw new HttpError(400, "Not your turn.");
     const i = Number(move);
     if (!(i >= 0 && i < 9) || game.board[i]) throw new HttpError(400, "Invalid move.");
-    const mark = userId === game.hostId ? "X" : "O";
+    const mark = Number(userId) === Number(game.hostId) ? "X" : "O";
     game.board[i] = mark;
     const result = checkTicTacToe(game.board);
     if (result === "draw") { game.status = "done"; game.winnerId = "draw"; }
     else if (result === "X") { game.status = "done"; game.winnerId = game.hostId; }
     else if (result === "O") { game.status = "done"; game.winnerId = game.guestId; }
-    else game.turn = userId === game.hostId ? game.guestId : game.hostId;
+    else game.turn = Number(userId) === Number(game.hostId) ? game.guestId : game.hostId;
     return;
   }
   if (game.type === "connect4") {
-    if (game.turn !== userId) throw new HttpError(400, "Not your turn.");
+    if (Number(game.turn) !== Number(userId)) throw new HttpError(400, "Not your turn.");
     const col = Number(move);
     if (!(col >= 0 && col < 7)) throw new HttpError(400, "Invalid column.");
     let row = -1;
     for (let r = 5; r >= 0; r--) if (!game.board[r][col]) { row = r; break; }
     if (row < 0) throw new HttpError(400, "Column is full.");
-    const mark = userId === game.hostId ? "H" : "G";
+    const mark = Number(userId) === Number(game.hostId) ? "H" : "G";
     game.board[row][col] = mark;
     const result = checkConnect4(game.board);
     if (result === "draw") { game.status = "done"; game.winnerId = "draw"; }
     else if (result === "H") { game.status = "done"; game.winnerId = game.hostId; }
     else if (result === "G") { game.status = "done"; game.winnerId = game.guestId; }
-    else game.turn = userId === game.hostId ? game.guestId : game.hostId;
+    else game.turn = Number(userId) === Number(game.hostId) ? game.guestId : game.hostId;
     return;
   }
   if (game.type === "rps") {
