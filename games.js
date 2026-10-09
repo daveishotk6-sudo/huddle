@@ -1,7 +1,6 @@
 (function () {
   var lastSend = 0, COOLDOWN = 3000;
   var gamePoll = null, listPoll = null;
-
   function getProfile() {
     try { return JSON.parse(localStorage.getItem("huddle:profile") || "null"); } catch (e) { return null; }
   }
@@ -33,7 +32,6 @@
     if (p.user && p.user.id != null) return Number(p.user.id);
     return null;
   }
-
   function ensureChrome() {
     if (!document.getElementById("huddle-theme-btn")) {
       var t = document.createElement("button");
@@ -51,7 +49,6 @@
     }
   }
   setTheme(getTheme());
-
   function openGamesPanel() {
     var existing = document.getElementById("huddle-games-panel");
     if (existing) {
@@ -72,6 +69,7 @@
       '<button type="button" class="huddle-game-btn" data-type="tictactoe">❌ Tic-Tac-Toe</button>' +
       '<button type="button" class="huddle-game-btn" data-type="connect4">🔴 Connect Four</button>' +
       '<button type="button" class="huddle-game-btn" data-type="rps">✊ Rock Paper Scissors</button>' +
+      '<button type="button" class="huddle-game-btn" data-type="fight">🥊 Fight</button>' +
       "</div>" +
       '<h3 style="margin:16px 0 4px;font-size:14px;opacity:.7">Open games</h3>' +
       '<div id="huddle-open-games">Loading…</div>' +
@@ -94,7 +92,6 @@
     if (listPoll) clearInterval(listPoll);
     listPoll = setInterval(refreshOpenGames, 2000);
   }
-
   async function refreshOpenGames() {
     var box = document.getElementById("huddle-open-games");
     if (!box) return;
@@ -141,7 +138,6 @@
       box.innerHTML = '<p class="huddle-status">Could not load games.</p>';
     }
   }
-
   async function startGame(type) {
     var slug = roomSlug();
     if (!slug) { alert("Open a room first."); return; }
@@ -164,7 +160,6 @@
       alert(e.message || "Failed");
     }
   }
-
   async function joinGame(id) {
     var p = getProfile();
     if (!p || !p.token) { alert("Set up your profile first."); return; }
@@ -184,11 +179,9 @@
       alert(e.message || "Failed to join");
     }
   }
-
   function stopGamePoll() {
     if (gamePoll) { clearInterval(gamePoll); gamePoll = null; }
   }
-
   async function openBoard(id) {
     stopGamePoll();
     var existing = document.getElementById("huddle-board");
@@ -204,7 +197,6 @@
     await renderBoard(id);
     gamePoll = setInterval(function () { renderBoard(id); }, 800);
   }
-
   async function renderBoard(id) {
     var wrap = document.getElementById("huddle-board");
     if (!wrap) return;
@@ -215,11 +207,10 @@
       var card = wrap.querySelector(".huddle-board-card");
       var status = g.status === "waiting" ? "Waiting for opponent… (they open Games → Join)" :
         g.status === "done" ? (g.winnerId === "draw" ? "Draw!" : "Game over") : "In progress";
-      var title = ({ tictactoe: "Tic-Tac-Toe", connect4: "Connect Four", rps: "Rock Paper Scissors" })[g.type] || g.type;
+      var title = ({ tictactoe: "Tic-Tac-Toe", connect4: "Connect Four", rps: "Rock Paper Scissors", fight: "Fight" })[g.type] || g.type;
       var html = '<button class="close" type="button" style="float:right;border:0;background:transparent;font-size:22px;cursor:pointer;color:inherit">×</button>';
       html += '<h2 style="margin:0 0 4px;font-size:18px">' + title + "</h2>";
       html += '<div class="huddle-status">' + (g.hostName || "") + (g.guestName ? (" vs " + g.guestName) : "") + " · " + status + "</div>";
-
       if (g.type === "tictactoe" && g.board) {
         html += '<div class="ttt-grid">';
         for (var i = 0; i < 9; i++) {
@@ -248,13 +239,33 @@
           html += '<button type="button" data-rps="scissors">✌️</button>';
           html += "</div>";
         }
+      } else if (g.type === "fight") {
+        var hp = g.hp || {};
+        var maxHp = g.maxHp || 100;
+        var hHp = hp[g.hostId] != null ? hp[g.hostId] : maxHp;
+        var gHp = g.guestId != null && hp[g.guestId] != null ? hp[g.guestId] : maxHp;
+        html += '<div class="huddle-status">Round ' + (g.round || 1) + ' · First to KO</div>';
+        if (g.lastResult) html += '<div class="huddle-status">' + g.lastResult + '</div>';
+        html += '<div class="fight-bars">';
+        html += '<div class="fight-fighter"><div class="fight-name">' + (g.hostName || "Host") + '</div>';
+        html += '<div class="fight-bar"><div class="fight-fill" style="width:' + Math.max(0, Math.min(100, hHp)) + '%"></div></div>';
+        html += '<div class="fight-hp">' + hHp + ' / ' + maxHp + '</div></div>';
+        html += '<div class="fight-fighter"><div class="fight-name">' + (g.guestName || "Waiting…") + '</div>';
+        html += '<div class="fight-bar"><div class="fight-fill guest" style="width:' + Math.max(0, Math.min(100, gHp)) + '%"></div></div>';
+        html += '<div class="fight-hp">' + (g.guestName ? (gHp + ' / ' + maxHp) : '—') + '</div></div>';
+        html += '</div>';
+        if (g.status === "active") {
+          html += '<div class="rps-row">';
+          html += '<button type="button" data-fight="punch" class="fight-btn punch">👊 Punch</button>';
+          html += '<button type="button" data-fight="block" class="fight-btn block">🛡️ Block</button>';
+          html += '</div>';
+          html += '<p class="huddle-status">Both choose each round. Punch vs Block = weak hit. Both punch = big damage.</p>';
+        }
       }
-
       if (g.status === "done") {
         html += '<p class="huddle-status">Winner: ' + (g.winnerId === "draw" ? "Draw" : (Number(g.winnerId) === Number(g.hostId) ? g.hostName : g.guestName)) + "</p>";
       }
       html += '<button type="button" id="huddle-cancel-game" style="margin-top:8px;border:0;background:transparent;color:#ff5a36;cursor:pointer">Leave / cancel</button>';
-
       card.innerHTML = html;
       card.querySelector(".close").onclick = function () { stopGamePoll(); wrap.remove(); };
       var cancel = card.querySelector("#huddle-cancel-game");
@@ -271,11 +282,13 @@
       card.querySelectorAll("[data-rps]").forEach(function (btn) {
         btn.onclick = function () { sendMove(id, btn.getAttribute("data-rps")); };
       });
+      card.querySelectorAll("[data-fight]").forEach(function (btn) {
+        btn.onclick = function () { sendMove(id, btn.getAttribute("data-fight")); };
+      });
     } catch (e) {
       wrap.querySelector(".huddle-board-card").innerHTML = "<p>Game unavailable.</p>";
     }
   }
-
   async function sendMove(id, move) {
     var p = getProfile();
     if (!p || !p.token) { alert("Set up your profile first."); return; }
@@ -292,7 +305,6 @@
       alert(e.message || "Move failed");
     }
   }
-
   function attachInviteButtons() {
     document.querySelectorAll(".bubble").forEach(function (bubble) {
       if (bubble.dataset.gameInviteDone) return;
@@ -312,7 +324,6 @@
       bubble.appendChild(row);
     });
   }
-
   function attachUploadButton() {
     document.querySelectorAll(".composer").forEach(function (composer) {
       if (composer.querySelector(".huddle-img-btn")) return;
@@ -360,7 +371,6 @@
       composer.appendChild(file);
     });
   }
-
   function renderImages() {
     document.querySelectorAll(".bubble").forEach(function (bubble) {
       if (bubble.dataset.imgDone) return;
@@ -374,7 +384,6 @@
       bubble.appendChild(img);
     });
   }
-
   var orig = window.fetch;
   window.fetch = function () {
     var args = arguments;
@@ -402,7 +411,6 @@
       return res;
     });
   };
-
   setInterval(function () {
     ensureChrome();
     attachUploadButton();
