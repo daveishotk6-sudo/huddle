@@ -350,6 +350,8 @@ function resolveStatic(rel) {
 function serveStatic(req, res, url) {
   if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, { error: "Method not allowed." });
   let rel = decodeURIComponent(url.pathname);
+  // Pretty routes
+  if (rel === "/admin" || rel === "/admin/") rel = "/admin.html";
   let isAsset = rel.startsWith("/assets/");
   let file = resolveStatic(rel);
   if (!file) {
