@@ -266,6 +266,28 @@ async function handleApi(req, res, url) {
     return send(res, 200, { ok: true, removed: removedHandle, message: `"${removedHandle}" removed. That name is free again.` });
   }
 
+  if (parts[0] === "admin" && parts[1] === "wipe" && parts.length === 2 && method === "POST") {
+    authAdmin(req);
+    rateLimit(req, "admin-wipe", 3, 60 * 60 * 1000);
+    db.messages = [];
+    db.nextMessageId = 1;
+    db.rooms = [];
+    db.nextRoomId = 1;
+    [
+      ["General", "💬", "Anything goes"],
+      ["Food", "🍕", "What are you eating?"],
+      ["Movies & TV", "🎬", "What are you watching?"],
+      ["Tech", "💻", "Gadgets, code, and everything in between"],
+      ["Pets", "🐶", "Show off your best friend"],
+    ].forEach(([name, emoji, description]) => createRoom(name, emoji, description));
+    saveSoon();
+    return send(res, 200, {
+      ok: true,
+      message: "All chats wiped. Default rooms restored. Users were kept.",
+      rooms: db.rooms.map(publicRoom),
+    });
+  }
+
   if (parts[0] === "rooms" && parts.length === 1) {
     if (method === "GET") {
       const now = Date.now();
@@ -350,7 +372,6 @@ function resolveStatic(rel) {
 function serveStatic(req, res, url) {
   if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, { error: "Method not allowed." });
   let rel = decodeURIComponent(url.pathname);
-  // Pretty routes
   if (rel === "/admin" || rel === "/admin/") rel = "/admin.html";
   let isAsset = rel.startsWith("/assets/");
   let file = resolveStatic(rel);
