@@ -50,6 +50,18 @@ html[data-theme=dark] .c4-cols button{background:#3d392f;color:#f0ebe3}
 .rps-row button{border:1.5px solid #e6dfd0;background:#fff;border-radius:14px;padding:12px 14px;font-size:28px;cursor:pointer}
 html[data-theme=dark] .rps-row button{background:#2a2720;border-color:#3d392f}
 .huddle-status{font-size:13px;opacity:.8;margin-bottom:8px}
+.fight-bars{display:flex;flex-direction:column;gap:10px;margin:12px 0}
+.fight-fighter{display:flex;flex-direction:column;gap:4px}
+.fight-name{font-weight:700;font-size:14px}
+.fight-bar{height:14px;border-radius:8px;background:#e6dfd0;overflow:hidden}
+html[data-theme=dark] .fight-bar{background:#3d392f}
+.fight-fill{height:100%;background:#37b24d;border-radius:8px;transition:width .3s}
+.fight-fill.guest{background:#1c7ed6}
+.fight-hp{font-size:12px;opacity:.8}
+.fight-btn{border:1.5px solid #e6dfd0;background:#fff;border-radius:14px;padding:12px 16px;font-size:16px;font-weight:700;cursor:pointer}
+html[data-theme=dark] .fight-btn{background:#2a2720;border-color:#3d392f;color:#f0ebe3}
+.fight-btn.punch{background:#ff5a36;color:#fff;border-color:#ff5a36}
+.fight-btn.block{background:#1c7ed6;color:#fff;border-color:#1c7ed6}
 </style>
 <script>(function(){var o=window.fetch;window.fetch=function(){return o.apply(this,arguments).then(function(res){if(res.status===401){try{localStorage.removeItem("huddle:profile")}catch(e){}location.reload()}return res})}})();</script>
 <script type="module" crossorigin src="/assets/index-Cklpbby4.js"></script>
