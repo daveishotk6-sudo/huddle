@@ -251,28 +251,50 @@ async function handleApi(req, res, url) {
       return send(res, 201, { game: gamesLogic.publicGame(game), message: publicMessage(msg) });
     }
     if (parts.length === 2 && method === "GET") {
-      const game = (db.games || []).find((g) => g.id === Number(parts[1]));
+      const game = (db.games || []).find((g) => Number(g.id) === Number(parts[1]));
       if (!game) throw new HttpError(404, "Game not found.");
       return send(res, 200, gamesLogic.publicGame(game));
     }
     if (parts.length === 3 && parts[2] === "join" && method === "POST") {
       const user = authUser(req);
-      const game = (db.games || []).find((g) => g.id === Number(parts[1]));
+      const game = (db.games || []).find((g) => Number(g.id) === Number(parts[1]));
       if (!game) throw new HttpError(404, "Game not found.");
+      const uid = Number(user.id);
+      const hostId = Number(game.hostId);
+      const guestId = game.guestId != null ? Number(game.guestId) : null;
+      if (uid === hostId || (guestId != null && uid === guestId)) {
+        return send(res, 200, gamesLogic.publicGame(game));
+      }
+      if (game.status === "active" || game.status === "done" || game.status === "cancelled") {
+        throw new HttpError(400, "This game already started or ended.");
+      }
       if (game.status !== "waiting") throw new HttpError(400, "This game already started or ended.");
-      if (game.hostId === user.id) throw new HttpError(400, "You can't join your own game.");
-      if (game.guestId) throw new HttpError(400, "Someone already joined.");
-      game.guestId = user.id; game.status = "active"; game.updatedAt = new Date().toISOString();
-      if (game.type === "rps" && game.scores) game.scores[user.id] = 0;
+      if (guestId != null) throw new HttpError(400, "Someone already joined.");
+      game.guestId = uid;
+      game.status = "active";
+      game.updatedAt = new Date().toISOString();
+      if (game.type === "rps") {
+        if (!game.scores) game.scores = {};
+        game.scores[hostId] = game.scores[hostId] || 0;
+        game.scores[uid] = 0;
+      }
+      try {
+        const room = db.rooms.find((r) => r.id === game.roomId);
+        if (room) {
+          const notice = { id: db.nextMessageId++, roomId: room.id, userId: user.id, body: "✅ Joined game #" + game.id + " — open Games → Play", imageUrl: null, gameId: game.id, createdAt: new Date().toISOString() };
+          db.messages.push(notice);
+        }
+      } catch (e) {}
       saveSoon();
       return send(res, 200, gamesLogic.publicGame(game));
     }
     if (parts.length === 3 && parts[2] === "move" && method === "POST") {
       const user = authUser(req);
-      const game = (db.games || []).find((g) => g.id === Number(parts[1]));
+      const game = (db.games || []).find((g) => Number(g.id) === Number(parts[1]));
       if (!game) throw new HttpError(404, "Game not found.");
       if (game.status !== "active") throw new HttpError(400, "Game is not active.");
-      if (user.id !== game.hostId && user.id !== game.guestId) throw new HttpError(403, "You're not in this game.");
+      const uid = Number(user.id);
+      if (uid !== Number(game.hostId) && uid !== Number(game.guestId)) throw new HttpError(403, "You're not in this game.");
       const b = await readJson(req);
       gamesLogic.applyMove(game, user.id, b.move);
       game.updatedAt = new Date().toISOString(); saveSoon();
@@ -280,9 +302,10 @@ async function handleApi(req, res, url) {
     }
     if (parts.length === 3 && parts[2] === "cancel" && method === "POST") {
       const user = authUser(req);
-      const game = (db.games || []).find((g) => g.id === Number(parts[1]));
+      const game = (db.games || []).find((g) => Number(g.id) === Number(parts[1]));
       if (!game) throw new HttpError(404, "Game not found.");
-      if (user.id !== game.hostId && user.id !== game.guestId) throw new HttpError(403, "Not your game.");
+      const uid = Number(user.id);
+      if (uid !== Number(game.hostId) && uid !== Number(game.guestId || -1)) throw new HttpError(403, "Not your game.");
       game.status = "cancelled"; game.updatedAt = new Date().toISOString(); saveSoon();
       return send(res, 200, gamesLogic.publicGame(game));
     }
@@ -290,22 +313,23 @@ async function handleApi(req, res, url) {
   if (parts[0] === "rooms" && parts.length === 1) {
     if (method === "GET") {
       const now = Date.now();
-      const list = db.rooms.map((r) => {
+      const active = new Set();
+      for (const m of db.messages) {
+        if (now - new Date(m.createdAt).getTime() <= ACTIVE_WINDOW_MS && m.userId) active.add(m.userId);
+      }
+      const rooms = db.rooms.map((r) => {
         const msgs = db.messages.filter((m) => m.roomId === r.id);
-        const last = msgs[msgs.length - 1];
-        const active = new Set(msgs.filter((m) => now - new Date(m.createdAt).getTime() < ACTIVE_WINDOW_MS).map((m) => m.userId).filter(Boolean));
-        return { id: r.id, slug: r.slug, name: r.name, emoji: r.emoji, description: r.description, activeCount: active.size, lastMessage: last ? { author: publicMessage(last).author, body: last.body, createdAt: last.createdAt } : null, _t: last ? new Date(last.createdAt).getTime() : new Date(r.createdAt).getTime() };
-      }).sort((a, b) => b._t - a._t).map((r) => { const x = Object.assign({}, r); delete x._t; return x; });
-      return send(res, 200, list);
+        const last = msgs.length ? msgs[msgs.length - 1] : null;
+        return Object.assign(publicRoom(r), { activeCount: active.size, lastMessage: last ? publicMessage(last) : null });
+      });
+      return send(res, 200, { rooms, peopleOnline: active.size });
     }
     if (method === "POST") {
+      const user = authUser(req);
       rateLimit(req, "room", 10, 60 * 60 * 1000);
       const b = await readJson(req);
-      const name = clean(b.name, 40), description = clean(b.description, 120);
-      const emoji = clean(b.emoji, 8) || "💬";
-      if (name.length < 2) throw new HttpError(400, "Room name must be at least 2 characters.");
-      if (name.toLowerCase() === "ai") throw new HttpError(409, "AI room already exists.");
-      if (db.rooms.some((r) => r.name.toLowerCase() === name.toLowerCase())) throw new HttpError(409, "A room with that name already exists.");
+      const name = clean(b.name, 40), emoji = clean(b.emoji || "💬", 8), description = clean(b.description || "", 120);
+      if (name.length < 2) throw new HttpError(400, "Room name too short.");
       const room = createRoom(name, emoji, description); saveSoon();
       return send(res, 201, { id: room.id, slug: room.slug, name: room.name, emoji: room.emoji, description: room.description, activeCount: 0, lastMessage: null });
     }
@@ -375,21 +399,21 @@ const server = http.createServer(async (req, res) => {
       if (!fs.existsSync(file)) return send(res, 404, { error: "Not found." });
       const ext = path.extname(file).toLowerCase();
       const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" }[ext] || "application/octet-stream";
-      res.writeHead(200, { "Content-Type": mime, "Cache-Control": "public, max-age=31536000, immutable" });
-      if (req.method === "HEAD") return res.end();
+      res.writeHead(200, { "Content-Type": mime, "Cache-Control": "public, max-age=86400" });
       return fs.createReadStream(file).pipe(res);
     }
     return serveStatic(req, res, url);
   } catch (e) {
-    if (e instanceof HttpError) return send(res, e.status, { error: e.message });
-    console.error(e);
-    if (!res.headersSent) send(res, 500, { error: "Something went wrong." });
+    const status = e.status || 500;
+    if (status >= 500) console.error(e);
+    return send(res, status, { error: e.message || "Server error." });
   }
 });
-server.keepAliveTimeout = 65 * 1000;
-server.headersTimeout = 66 * 1000;
-load(); cleanupOldImages(); setInterval(cleanupOldImages, 60 * 60 * 1000).unref();
-server.listen(PORT, HOST, () => console.log("Huddle listening on http://" + HOST + ":" + PORT));
-function shutdown() { flush(); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); }
-process.on("SIGTERM", shutdown);
-process.on("SIGINT", shutdown);
+fs.mkdirSync(DATA_DIR, { recursive: true });
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+load();
+cleanupOldImages();
+setInterval(cleanupOldImages, 60 * 60 * 1000).unref();
+server.listen(PORT, HOST, () => console.log("Huddle listening on " + HOST + ":" + PORT));
+process.on("SIGTERM", () => { flush(); process.exit(0); });
+process.on("SIGINT", () => { flush(); process.exit(0); });
