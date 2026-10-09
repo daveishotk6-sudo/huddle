@@ -70,12 +70,11 @@
             var btn = document.createElement("button");
             btn.type = "button";
             btn.className = "huddle-img-btn";
-            btn.title = "Send image";
-            btn.textContent = "📷";
+            btn.title = "Send image from gallery";
+            btn.textContent = "🖼";
             var file = document.createElement("input");
             file.type = "file";
             file.accept = "image/png,image/jpeg,image/webp,image/gif,image/*";
-            file.setAttribute("capture", "environment");
             file.style.display = "none";
             btn.onclick = function () { file.click(); };
             file.onchange = async function () {
