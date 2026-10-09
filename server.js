@@ -9,18 +9,16 @@ const crypto = require("node:crypto");
 
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = "0.0.0.0";
-// On Railway, attach a Volume and set DATA_DIR to its mount path (e.g. /data)
-// so chats survive redeploys.
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const DB_FILE = path.join(DATA_DIR, "huddle.json");
 const PUBLIC_DIR = path.join(__dirname, "public");
 const ROOT_DIR = __dirname;
 
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "Unauthorized601";
 const ACTIVE_WINDOW_MS = 15 * 60 * 1000;
 const MAX_MESSAGES_PER_ROOM = 5000;
 const INITIAL_MESSAGES = 200;
 
-// ---------- storage ----------
 let db = { nextUserId: 1, nextRoomId: 1, nextMessageId: 1, users: [], rooms: [], messages: [] };
 
 function load() {
@@ -64,7 +62,6 @@ function flush() {
   } catch (e) { console.error("Save failed:", e.message); }
 }
 
-// ---------- helpers ----------
 const COLORS = ["#ff6b6b", "#f59f00", "#37b24d", "#1c7ed6", "#7048e8", "#d6336c", "#0ca678", "#e8590c"];
 const hash = (t) => crypto.createHash("sha256").update(t).digest("hex");
 const clean = (v, max) => (typeof v === "string" ? v.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, max) : "");
@@ -91,12 +88,14 @@ const publicRoom = (r) => ({ id: r.id, slug: r.slug, name: r.name, emoji: r.emoj
 
 function publicMessage(m) {
   const u = db.users.find((x) => x.id === m.userId);
+  const isAdmin = !!(u && u.isAdmin);
   return {
     id: m.id, roomId: m.roomId, userId: m.userId,
-    author: u ? u.handle : m.author,
-    realName: u ? u.realName : m.realName || "",
-    nicknames: u ? u.nicknames : m.nicknames || "",
-    color: u ? u.color : m.color,
+    author: u ? u.handle : (m.author || "deleted"),
+    realName: u ? u.realName : (m.realName || ""),
+    nicknames: u ? u.nicknames : (m.nicknames || ""),
+    color: u ? u.color : (m.color || "#7a7366"),
+    isAdmin,
     body: m.body, createdAt: m.createdAt,
   };
 }
@@ -110,7 +109,15 @@ function authUser(req) {
   return u;
 }
 
-// simple per-IP sliding-window rate limiter
+function authAdmin(req) {
+  const m = /^Bearer\s+([A-Za-z0-9_-]{20,100})$/.exec(req.headers.authorization || "");
+  if (!m) throw new HttpError(401, "Admin login required.");
+  const h = hash(m[1]);
+  const u = db.users.find((x) => x.tokenHash === h && x.isAdmin);
+  if (!u) throw new HttpError(401, "Admin login required.");
+  return u;
+}
+
 const hits = new Map();
 function rateLimit(req, key, limit, windowMs) {
   const ip = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").toString().split(",")[0].trim();
@@ -154,12 +161,21 @@ function send(res, status, body, headers = {}) {
   res.end(data);
 }
 
-// ---------- API ----------
+function findUserByName(query) {
+  const q = clean(query, 80).toLowerCase();
+  if (!q) return null;
+  return db.users.find((u) =>
+    u.handle.toLowerCase() === q ||
+    (u.realName && u.realName.toLowerCase() === q) ||
+    (u.nicknames && u.nicknames.toLowerCase().split(/[,/|]+/).map((s) => s.trim()).includes(q)) ||
+    (u.nicknames && u.nicknames.toLowerCase() === q)
+  ) || null;
+}
+
 async function handleApi(req, res, url) {
-  const parts = url.pathname.split("/").filter(Boolean).slice(1).map(decodeURIComponent); // drop "api"
+  const parts = url.pathname.split("/").filter(Boolean).slice(1).map(decodeURIComponent);
   const method = req.method;
 
-  // POST /api/users
   if (parts[0] === "users" && parts.length === 1 && method === "POST") {
     rateLimit(req, "register", 10, 60 * 60 * 1000);
     const b = await readJson(req);
@@ -170,22 +186,93 @@ async function handleApi(req, res, url) {
     if (db.users.some((u) => u.handle.toLowerCase() === handle.toLowerCase()))
       throw new HttpError(409, "That name is already taken — try another.");
     const token = crypto.randomBytes(32).toString("base64url");
-    const user = { id: db.nextUserId++, handle, realName, nicknames, color, tokenHash: hash(token), createdAt: new Date().toISOString() };
+    const user = { id: db.nextUserId++, handle, realName, nicknames, color, tokenHash: hash(token), isAdmin: false, createdAt: new Date().toISOString() };
     db.users.push(user);
     saveSoon();
-    return send(res, 201, { user: { id: user.id, handle, realName, nicknames, color }, token });
+    return send(res, 201, { user: { id: user.id, handle, realName, nicknames, color, isAdmin: false }, token });
   }
 
-  // GET/POST /api/rooms
+  if (parts[0] === "admin" && parts[1] === "login" && parts.length === 2 && method === "POST") {
+    rateLimit(req, "admin-login", 5, 15 * 60 * 1000);
+    const b = await readJson(req);
+    if (String(b.password || "") !== ADMIN_PASSWORD) throw new HttpError(401, "Wrong password.");
+    let admin = db.users.find((u) => u.isAdmin && u.handle === "Admin");
+    if (!admin) {
+      db.users = db.users.filter((u) => u.handle.toLowerCase() !== "admin");
+      const token = crypto.randomBytes(32).toString("base64url");
+      admin = {
+        id: db.nextUserId++,
+        handle: "Admin",
+        realName: "Administrator",
+        nicknames: "admin",
+        color: "#ff5a36",
+        tokenHash: hash(token),
+        isAdmin: true,
+        createdAt: new Date().toISOString(),
+      };
+      db.users.push(admin);
+      saveSoon();
+      return send(res, 200, {
+        token,
+        user: { id: admin.id, handle: admin.handle, realName: admin.realName, nicknames: admin.nicknames, color: admin.color, isAdmin: true },
+      });
+    }
+    const token = crypto.randomBytes(32).toString("base64url");
+    admin.tokenHash = hash(token);
+    admin.isAdmin = true;
+    saveSoon();
+    return send(res, 200, {
+      token,
+      user: { id: admin.id, handle: admin.handle, realName: admin.realName, nicknames: admin.nicknames, color: admin.color, isAdmin: true },
+    });
+  }
+
+  if (parts[0] === "admin" && parts[1] === "users" && parts.length === 2 && method === "GET") {
+    authAdmin(req);
+    const list = db.users
+      .filter((u) => !u.isAdmin)
+      .map((u) => ({
+        id: u.id,
+        handle: u.handle,
+        realName: u.realName,
+        nicknames: u.nicknames,
+        color: u.color,
+        createdAt: u.createdAt,
+        messageCount: db.messages.filter((m) => m.userId === u.id).length,
+      }))
+      .sort((a, b) => a.handle.localeCompare(b.handle));
+    return send(res, 200, list);
+  }
+
+  if (parts[0] === "admin" && parts[1] === "users" && parts.length === 2 && method === "DELETE") {
+    authAdmin(req);
+    const b = await readJson(req);
+    const query = b.query || b.handle || b.name || b.nickname || "";
+    const target = findUserByName(query);
+    if (!target) throw new HttpError(404, "No user found with that name or nickname.");
+    if (target.isAdmin) throw new HttpError(400, "Cannot remove the admin account.");
+    const removedHandle = target.handle;
+    db.users = db.users.filter((u) => u.id !== target.id);
+    for (const m of db.messages) {
+      if (m.userId === target.id) {
+        m.author = removedHandle;
+        m.realName = target.realName;
+        m.nicknames = target.nicknames;
+        m.color = target.color;
+        m.userId = null;
+      }
+    }
+    saveSoon();
+    return send(res, 200, { ok: true, removed: removedHandle, message: `"${removedHandle}" removed. That name is free again.` });
+  }
+
   if (parts[0] === "rooms" && parts.length === 1) {
     if (method === "GET") {
       const now = Date.now();
-      const globalActive = new Set();
       const list = db.rooms.map((r) => {
         const msgs = db.messages.filter((m) => m.roomId === r.id);
         const last = msgs[msgs.length - 1];
-        const active = new Set(msgs.filter((m) => now - new Date(m.createdAt).getTime() < ACTIVE_WINDOW_MS).map((m) => m.userId));
-        for (const uid of active) globalActive.add(uid);
+        const active = new Set(msgs.filter((m) => now - new Date(m.createdAt).getTime() < ACTIVE_WINDOW_MS).map((m) => m.userId).filter(Boolean));
         return {
           ...publicRoom(r),
           activeCount: active.size,
@@ -193,8 +280,6 @@ async function handleApi(req, res, url) {
           _t: last ? new Date(last.createdAt).getTime() : new Date(r.createdAt).getTime(),
         };
       }).sort((a, b) => b._t - a._t).map(({ _t, ...r }) => r);
-      // Note: frontend currently sums activeCount (can overcount same user in multiple rooms).
-      // globalActive.size is the true unique count; ready for a future frontend update.
       return send(res, 200, list);
     }
     if (method === "POST") {
@@ -212,7 +297,6 @@ async function handleApi(req, res, url) {
     }
   }
 
-  // /api/rooms/:slug/messages
   if (parts[0] === "rooms" && parts.length === 3 && parts[2] === "messages") {
     const room = db.rooms.find((r) => r.slug === parts[1]);
     if (!room) throw new HttpError(404, "That room doesn't exist.");
@@ -231,7 +315,6 @@ async function handleApi(req, res, url) {
       if (!body) throw new HttpError(400, "Message can't be empty.");
       const m = { id: db.nextMessageId++, roomId: room.id, userId: user.id, body, createdAt: new Date().toISOString() };
       db.messages.push(m);
-      // cap history per room
       const mine = db.messages.filter((x) => x.roomId === room.id);
       if (mine.length > MAX_MESSAGES_PER_ROOM) {
         const drop = new Set(mine.slice(0, mine.length - MAX_MESSAGES_PER_ROOM).map((x) => x.id));
@@ -245,7 +328,6 @@ async function handleApi(req, res, url) {
   throw new HttpError(404, "Not found.");
 }
 
-// ---------- static files ----------
 const MIME = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
   ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json", ".json": "application/json",
@@ -253,7 +335,6 @@ const MIME = {
 };
 
 function resolveStatic(rel) {
-  // Prefer public/, fall back to repo root (for the original layout)
   const candidates = [
     path.normalize(path.join(PUBLIC_DIR, rel)),
     path.normalize(path.join(ROOT_DIR, rel)),
@@ -273,7 +354,6 @@ function serveStatic(req, res, url) {
   let file = resolveStatic(rel);
   if (!file) {
     if (isAsset || path.extname(rel)) return send(res, 404, "Not found", { "Content-Type": "text/plain" });
-    // SPA fallback
     file = resolveStatic("/index.html") || path.join(PUBLIC_DIR, "index.html");
     isAsset = false;
   }
@@ -287,14 +367,13 @@ function serveStatic(req, res, url) {
   fs.createReadStream(file).pipe(res);
 }
 
-// ---------- server ----------
 const server = http.createServer(async (req, res) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   try {
     const url = new URL(req.url, "http://localhost");
     if (url.pathname === "/health") return send(res, 200, { ok: true });
-    if (url.pathname.startsWith("/api/") ) return await handleApi(req, res, url);
+    if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
     return serveStatic(req, res, url);
   } catch (e) {
     if (e instanceof HttpError) return send(res, e.status, { error: e.message });
@@ -302,7 +381,7 @@ const server = http.createServer(async (req, res) => {
     if (!res.headersSent) send(res, 500, { error: "Something went wrong." });
   }
 });
-server.keepAliveTimeout = 65 * 1000; // longer than Railway's proxy idle timeout
+server.keepAliveTimeout = 65 * 1000;
 server.headersTimeout = 66 * 1000;
 
 load();
