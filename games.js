@@ -1,6 +1,6 @@
 (function () {
   var lastSend = 0, COOLDOWN = 3000;
-  var gamePoll = null;
+  var gamePoll = null, listPoll = null;
 
   function getProfile() {
     try { return JSON.parse(localStorage.getItem("huddle:profile") || "null"); } catch (e) { return null; }
@@ -26,6 +26,13 @@
       ? { "content-type": "application/json", authorization: "Bearer " + p.token }
       : { "content-type": "application/json" };
   }
+  function myUserId() {
+    var p = getProfile();
+    if (!p) return null;
+    if (p.id != null) return Number(p.id);
+    if (p.user && p.user.id != null) return Number(p.user.id);
+    return null;
+  }
 
   function ensureChrome() {
     if (!document.getElementById("huddle-theme-btn")) {
@@ -47,7 +54,11 @@
 
   function openGamesPanel() {
     var existing = document.getElementById("huddle-games-panel");
-    if (existing) { existing.remove(); return; }
+    if (existing) {
+      existing.remove();
+      if (listPoll) { clearInterval(listPoll); listPoll = null; }
+      return;
+    }
     var slug = roomSlug();
     var panel = document.createElement("div");
     panel.id = "huddle-games-panel";
@@ -55,23 +66,33 @@
     panel.innerHTML =
       '<div class="huddle-panel-card">' +
       '<button class="close" type="button" aria-label="Close">×</button>' +
-      '<h2>Games</h2>' +
-      '<p class="huddle-status">' + (slug ? "Invites post to this room's chat." : "Open a chat room first, then start a game.") + '</p>' +
+      "<h2>Games</h2>" +
+      '<p class="huddle-status">' + (slug ? "Start a game — invite posts in this room. Friend taps Join." : "Open a chat room first, then start a game.") + "</p>" +
       '<div class="huddle-game-list">' +
       '<button type="button" class="huddle-game-btn" data-type="tictactoe">❌ Tic-Tac-Toe</button>' +
       '<button type="button" class="huddle-game-btn" data-type="connect4">🔴 Connect Four</button>' +
       '<button type="button" class="huddle-game-btn" data-type="rps">✊ Rock Paper Scissors</button>' +
-      '</div>' +
+      "</div>" +
       '<h3 style="margin:16px 0 4px;font-size:14px;opacity:.7">Open games</h3>' +
       '<div id="huddle-open-games">Loading…</div>' +
-      '</div>';
+      "</div>";
     document.body.appendChild(panel);
-    panel.querySelector(".close").onclick = function () { panel.remove(); };
-    panel.onclick = function (e) { if (e.target === panel) panel.remove(); };
+    panel.querySelector(".close").onclick = function () {
+      panel.remove();
+      if (listPoll) { clearInterval(listPoll); listPoll = null; }
+    };
+    panel.onclick = function (e) {
+      if (e.target === panel) {
+        panel.remove();
+        if (listPoll) { clearInterval(listPoll); listPoll = null; }
+      }
+    };
     panel.querySelectorAll("[data-type]").forEach(function (btn) {
       btn.onclick = function () { startGame(btn.getAttribute("data-type")); };
     });
     refreshOpenGames();
+    if (listPoll) clearInterval(listPoll);
+    listPoll = setInterval(refreshOpenGames, 2000);
   }
 
   async function refreshOpenGames() {
@@ -79,21 +100,36 @@
     if (!box) return;
     var slug = roomSlug();
     try {
-      var url = "/api/games" + (slug ? ("?room=" + encodeURIComponent(slug)) : "");
-      var res = await fetch(url);
+      var res = await fetch("/api/games" + (slug ? ("?room=" + encodeURIComponent(slug)) : ""));
       var list = await res.json();
-      if (!Array.isArray(list) || !list.length) {
-        box.innerHTML = '<p class="huddle-status">No open games yet.</p>';
+      if (!Array.isArray(list)) list = [];
+      if (!list.length && slug) {
+        var res2 = await fetch("/api/games");
+        var all = await res2.json();
+        if (Array.isArray(all)) list = all;
+      }
+      if (!list.length) {
+        box.innerHTML = '<p class="huddle-status">No open games yet. Start one above.</p>';
         return;
       }
       var p = getProfile();
+      var uid = myUserId();
       box.innerHTML = list.map(function (g) {
-        var label = g.type + " · " + g.hostName + (g.guestName ? " vs " + g.guestName : " (waiting)");
+        var label = (g.type || "?") + " · " + (g.hostName || "?") + (g.guestName ? (" vs " + g.guestName) : " (waiting)");
         var action = "";
-        if (g.status === "waiting" && p && p.token) action = '<button type="button" data-join="' + g.id + '">Join</button>';
-        else if (g.status === "active") action = '<button type="button" data-play="' + g.id + '">Play</button>';
-        else if (g.status === "done") action = "<span>Done</span>";
-        return '<div class="huddle-open-game"><span>' + label + '</span>' + action + '</div>';
+        var isHost = uid != null && Number(g.hostId) === uid;
+        var isGuest = uid != null && g.guestId != null && Number(g.guestId) === uid;
+        if (g.status === "waiting") {
+          if (isHost) action = '<button type="button" data-play="' + g.id + '">Waiting…</button>';
+          else if (p && p.token) action = '<button type="button" data-join="' + g.id + '">Join</button>';
+          else action = "<span>Login to join</span>";
+        } else if (g.status === "active") {
+          if (isHost || isGuest) action = '<button type="button" data-play="' + g.id + '">Play</button>';
+          else action = '<button type="button" data-play="' + g.id + '">Watch</button>';
+        } else if (g.status === "done") {
+          action = "<span>Done</span>";
+        }
+        return '<div class="huddle-open-game"><span>' + label + "</span>" + action + "</div>";
       }).join("");
       box.querySelectorAll("[data-join]").forEach(function (b) {
         b.onclick = function () { joinGame(Number(b.getAttribute("data-join"))); };
@@ -121,7 +157,8 @@
       if (!res.ok) throw new Error(data.error || "Could not start game");
       var panel = document.getElementById("huddle-games-panel");
       if (panel) panel.remove();
-      alert("Invite sent to chat! Wait for someone to join.");
+      if (listPoll) { clearInterval(listPoll); listPoll = null; }
+      alert("Invite sent to chat! Friend opens Games and taps Join.");
       if (data.game) openBoard(data.game.id);
     } catch (e) {
       alert(e.message || "Failed");
@@ -132,14 +169,19 @@
     var p = getProfile();
     if (!p || !p.token) { alert("Set up your profile first."); return; }
     try {
-      var res = await fetch("/api/games/" + id + "/join", { method: "POST", headers: authHeaders(), body: "{}" });
+      var res = await fetch("/api/games/" + id + "/join", {
+        method: "POST",
+        headers: authHeaders(),
+        body: "{}"
+      });
       var data = await res.json().catch(function () { return {}; });
       if (!res.ok) throw new Error(data.error || "Could not join");
       var panel = document.getElementById("huddle-games-panel");
       if (panel) panel.remove();
+      if (listPoll) { clearInterval(listPoll); listPoll = null; }
       openBoard(id);
     } catch (e) {
-      alert(e.message || "Failed");
+      alert(e.message || "Failed to join");
     }
   }
 
@@ -160,7 +202,7 @@
       if (e.target === wrap) { stopGamePoll(); wrap.remove(); }
     };
     await renderBoard(id);
-    gamePoll = setInterval(function () { renderBoard(id); }, 1000);
+    gamePoll = setInterval(function () { renderBoard(id); }, 800);
   }
 
   async function renderBoard(id) {
@@ -171,20 +213,20 @@
       var g = await res.json();
       if (!res.ok) throw new Error(g.error || "Gone");
       var card = wrap.querySelector(".huddle-board-card");
-      var status = g.status === "waiting" ? "Waiting for opponent…" :
+      var status = g.status === "waiting" ? "Waiting for opponent… (they open Games → Join)" :
         g.status === "done" ? (g.winnerId === "draw" ? "Draw!" : "Game over") : "In progress";
       var title = ({ tictactoe: "Tic-Tac-Toe", connect4: "Connect Four", rps: "Rock Paper Scissors" })[g.type] || g.type;
       var html = '<button class="close" type="button" style="float:right;border:0;background:transparent;font-size:22px;cursor:pointer;color:inherit">×</button>';
-      html += '<h2 style="margin:0 0 4px;font-size:18px">' + title + '</h2>';
-      html += '<div class="huddle-status">' + g.hostName + (g.guestName ? " vs " + g.guestName : "") + " · " + status + '</div>';
+      html += '<h2 style="margin:0 0 4px;font-size:18px">' + title + "</h2>";
+      html += '<div class="huddle-status">' + (g.hostName || "") + (g.guestName ? (" vs " + g.guestName) : "") + " · " + status + "</div>";
 
-      if (g.type === "tictactoe") {
+      if (g.type === "tictactoe" && g.board) {
         html += '<div class="ttt-grid">';
         for (var i = 0; i < 9; i++) {
-          html += '<button type="button" class="ttt-cell" data-i="' + i + '">' + (g.board[i] || "") + '</button>';
+          html += '<button type="button" class="ttt-cell" data-i="' + i + '">' + (g.board[i] || "") + "</button>";
         }
-        html += '</div>';
-      } else if (g.type === "connect4") {
+        html += "</div>";
+      } else if (g.type === "connect4" && g.board) {
         html += '<div class="c4-cols">';
         for (var c = 0; c < 7; c++) html += '<button type="button" data-col="' + c + '">▼</button>';
         html += '</div><div class="c4-grid">';
@@ -194,22 +236,22 @@
             html += '<div class="c4-cell ' + (cell || "") + '"></div>';
           }
         }
-        html += '</div>';
+        html += "</div>";
       } else if (g.type === "rps") {
         var scores = g.scores || {};
-        html += '<div class="huddle-status">Round ' + (g.round || 1) + ' · First to 3</div>';
-        html += '<div class="huddle-status">Score: ' + g.hostName + ' ' + (scores[g.hostId] || 0) + ' — ' + (scores[g.guestId] || 0) + ' ' + (g.guestName || "?") + '</div>';
+        html += '<div class="huddle-status">Round ' + (g.round || 1) + " · First to 3</div>";
+        html += '<div class="huddle-status">Score: ' + (g.hostName || "Host") + " " + (scores[g.hostId] || 0) + " — " + (scores[g.guestId] || 0) + " " + (g.guestName || "?") + "</div>";
         if (g.status === "active") {
           html += '<div class="rps-row">';
           html += '<button type="button" data-rps="rock">✊</button>';
           html += '<button type="button" data-rps="paper">✋</button>';
           html += '<button type="button" data-rps="scissors">✌️</button>';
-          html += '</div>';
+          html += "</div>";
         }
       }
 
       if (g.status === "done") {
-        html += '<p class="huddle-status">Winner: ' + (g.winnerId === "draw" ? "Draw" : (g.winnerId === g.hostId ? g.hostName : g.guestName)) + '</p>';
+        html += '<p class="huddle-status">Winner: ' + (g.winnerId === "draw" ? "Draw" : (Number(g.winnerId) === Number(g.hostId) ? g.hostName : g.guestName)) + "</p>";
       }
       html += '<button type="button" id="huddle-cancel-game" style="margin-top:8px;border:0;background:transparent;color:#ff5a36;cursor:pointer">Leave / cancel</button>';
 
@@ -249,6 +291,26 @@
     } catch (e) {
       alert(e.message || "Move failed");
     }
+  }
+
+  function attachInviteButtons() {
+    document.querySelectorAll(".bubble").forEach(function (bubble) {
+      if (bubble.dataset.gameInviteDone) return;
+      var text = bubble.textContent || "";
+      var idMatch = text.match(/game\s*#\s*(\d+)/i);
+      if (!idMatch) return;
+      bubble.dataset.gameInviteDone = "1";
+      var gid = Number(idMatch[1]);
+      if (!gid) return;
+      var row = document.createElement("div");
+      row.style.marginTop = "6px";
+      row.innerHTML = '<button type="button" style="border:0;background:#ff5a36;color:#fff;border-radius:10px;padding:8px 14px;font-weight:600;cursor:pointer">Join game</button>';
+      row.querySelector("button").onclick = function (e) {
+        e.preventDefault(); e.stopPropagation();
+        joinGame(gid);
+      };
+      bubble.appendChild(row);
+    });
   }
 
   function attachUploadButton() {
@@ -321,6 +383,21 @@
         var u = typeof args[0] === "string" ? args[0] : (args[0] && args[0].url) || "";
         var opts = args[1] || {};
         if (res.ok && opts.method === "POST" && /\/messages$/.test(String(u).split("?")[0])) lastSend = Date.now();
+        if (res.ok && /\/api\/users$/.test(String(u).split("?")[0]) && opts.method === "POST") {
+          res.clone().json().then(function (data) {
+            try {
+              var p = getProfile() || {};
+              if (data.token) p.token = data.token;
+              if (data.user) {
+                p.id = data.user.id;
+                p.name = data.user.handle || data.user.name || p.name;
+                p.handle = data.user.handle;
+                p.color = data.user.color;
+              }
+              localStorage.setItem("huddle:profile", JSON.stringify(p));
+            } catch (e) {}
+          }).catch(function () {});
+        }
       } catch (e) {}
       return res;
     });
@@ -330,6 +407,7 @@
     ensureChrome();
     attachUploadButton();
     renderImages();
+    attachInviteButtons();
   }, 700);
   ensureChrome();
 })();
