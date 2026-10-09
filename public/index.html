@@ -4,13 +4,293 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
     <meta name="theme-color" content="#f6f1e7" />
-    <title>Huddle</title>
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="description" content="Huddle — a pocket-sized live chat." />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&display=swap" rel="stylesheet" />
+    <title>Huddle — live chat in your pocket</title>
     <script>
-      try { if (localStorage.getItem("huddle:theme")==="dark") document.documentElement.setAttribute("data-theme","dark"); } catch(e){}
+      try { if (localStorage.getItem("huddle:theme") === "dark") document.documentElement.setAttribute("data-theme", "dark"); } catch (e) {}
     </script>
-    <link rel="stylesheet" crossorigin href="/assets/index-DLUjAQq1.css">
+    <style>
+      html[data-theme="dark"] { color-scheme: dark; }
+      html[data-theme="dark"] body, html[data-theme="dark"] #root { background:#12110e!important; color:#f0ebe3!important; }
+      html[data-theme="dark"] .shell, html[data-theme="dark"] .sidebar, html[data-theme="dark"] .room-pane,
+      html[data-theme="dark"] .chat, html[data-theme="dark"] .composer, html[data-theme="dark"] .room-row,
+      html[data-theme="dark"] .panel, html[data-theme="dark"] .card, html[data-theme="dark"] header,
+      html[data-theme="dark"] .topbar { background:#1c1a16!important; color:#f0ebe3!important; border-color:#2e2b24!important; }
+      html[data-theme="dark"] .bubble { background:#2a2720!important; color:#f0ebe3!important; }
+      html[data-theme="dark"] .bubble.mine { background:#3d2a22!important; }
+      html[data-theme="dark"] input, html[data-theme="dark"] textarea, html[data-theme="dark"] .input {
+        background:#12110e!important; color:#f0ebe3!important; border-color:#3d392f!important;
+      }
+      html[data-theme="dark"] .muted, html[data-theme="dark"] .meta, html[data-theme="dark"] .time { color:#a89f8e!important; }
+      .huddle-theme-btn {
+        position:fixed; top:max(12px,env(safe-area-inset-top)); right:12px; z-index:9999;
+        width:40px; height:40px; border-radius:50%; border:1.5px solid #e6dfd0;
+        background:#fffdf8; font-size:18px; display:grid; place-items:center; cursor:pointer;
+        box-shadow:0 2px 10px rgba(0,0,0,.08);
+      }
+      html[data-theme="dark"] .huddle-theme-btn { background:#2a2720; border-color:#3d392f; color:#f0ebe3; }
+      .huddle-img-btn {
+        flex:none; width:44px; height:44px; border-radius:50%; border:1.5px solid #e6dfd0;
+        background:#fffdf8; font-size:18px; display:grid; place-items:center; cursor:pointer;
+      }
+      html[data-theme="dark"] .huddle-img-btn { background:#2a2720; border-color:#3d392f; }
+      .huddle-img-btn:disabled { opacity:.35; }
+      .huddle-msg-img { max-width:min(240px,70vw); border-radius:14px; display:block; margin-top:4px; }
+      .huddle-msg-wrap { position:relative; }
+      .huddle-reacts { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+      .huddle-react-pill {
+        display:inline-flex; align-items:center; gap:3px; padding:2px 8px; border-radius:999px;
+        border:1px solid #e6dfd0; background:#fffdf8; font-size:13px; cursor:pointer; user-select:none;
+      }
+      html[data-theme="dark"] .huddle-react-pill { background:#2a2720; border-color:#3d392f; color:#f0ebe3; }
+      .huddle-react-add { opacity:.55; }
+      .huddle-react-picker {
+        position:absolute; z-index:50; display:flex; gap:4px; padding:6px; border-radius:12px;
+        background:#fffdf8; border:1px solid #e6dfd0; box-shadow:0 8px 24px rgba(0,0,0,.12);
+        bottom:100%; left:0; margin-bottom:4px;
+      }
+      html[data-theme="dark"] .huddle-react-picker { background:#2a2720; border-color:#3d392f; }
+      .huddle-react-picker button { border:0; background:transparent; font-size:20px; cursor:pointer; padding:4px; border-radius:8px; }
+    </style>
+    <script>
+      (function () {
+        var o = window.fetch;
+        window.fetch = function () {
+          return o.apply(this, arguments).then(function (res) {
+            if (res.status === 401) {
+              try { localStorage.removeItem("huddle:profile"); } catch (e) {}
+              location.reload();
+            }
+            return res;
+          });
+        };
+      })();
+    </script>
     <script type="module" crossorigin src="/assets/index-Cklpbby4.js"></script>
-    <script>location.replace("/");</script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DLUjAQq1.css">
+    <script>
+      (function () {
+        var lastSend = 0, COOLDOWN = 3000;
+        var REACT_EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🔥", "👏"];
+        var reactionCache = {}, lastMessages = [];
+        function getProfile() {
+          try { return JSON.parse(localStorage.getItem("huddle:profile") || "null"); } catch (e) { return null; }
+        }
+        function getTheme() {
+          try { return localStorage.getItem("huddle:theme") || "light"; } catch (e) { return "light"; }
+        }
+        function setTheme(t) {
+          try { localStorage.setItem("huddle:theme", t); } catch (e) {}
+          if (t === "dark") document.documentElement.setAttribute("data-theme", "dark");
+          else document.documentElement.removeAttribute("data-theme");
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", t === "dark" ? "#12110e" : "#f6f1e7");
+          var btn = document.getElementById("huddle-theme-btn");
+          if (btn) btn.textContent = t === "dark" ? "☀️" : "🌙";
+        }
+        function ensureThemeBtn() {
+          if (document.getElementById("huddle-theme-btn")) return;
+          var btn = document.createElement("button");
+          btn.id = "huddle-theme-btn"; btn.className = "huddle-theme-btn"; btn.type = "button";
+          btn.title = "Toggle dark mode";
+          btn.textContent = getTheme() === "dark" ? "☀️" : "🌙";
+          btn.onclick = function () { setTheme(getTheme() === "dark" ? "light" : "dark"); };
+          document.body.appendChild(btn);
+        }
+        setTheme(getTheme());
+        function roomSlug() {
+          return (location.pathname.match(/\/r\/([^/]+)/) || [])[1] || null;
+        }
+        var orig = window.fetch;
+        window.fetch = function () {
+          var args = arguments;
+          return orig.apply(this, args).then(function (res) {
+            try {
+              var u = typeof args[0] === "string" ? args[0] : (args[0] && args[0].url) || "";
+              var opts = args[1] || {};
+              if (res.ok && opts.method === "POST" && /\/messages$/.test(String(u).split("?")[0])) lastSend = Date.now();
+              if (res.ok && /\/api\/rooms\/[^/]+\/messages/.test(u) && (!opts.method || opts.method === "GET")) {
+                res.clone().json().then(function (data) {
+                  if (data && Array.isArray(data.messages)) {
+                    lastMessages = data.messages;
+                    data.messages.forEach(function (m) { reactionCache[m.id] = m.reactions || []; });
+                    setTimeout(renderReactionBars, 150);
+                  }
+                }).catch(function () {});
+              }
+              if (res.ok && opts.method === "POST" && /\/messages$/.test(String(u).split("?")[0])) {
+                res.clone().json().then(function (m) {
+                  if (m && m.id != null) {
+                    lastMessages.push(m);
+                    reactionCache[m.id] = m.reactions || [];
+                    setTimeout(renderReactionBars, 200);
+                  }
+                }).catch(function () {});
+              }
+              if (res.ok && /\/reactions/.test(u)) {
+                res.clone().json().then(function (m) {
+                  if (m && m.id != null) {
+                    reactionCache[m.id] = m.reactions || [];
+                    for (var i = 0; i < lastMessages.length; i++) if (lastMessages[i].id === m.id) lastMessages[i] = m;
+                    setTimeout(renderReactionBars, 50);
+                  }
+                }).catch(function () {});
+              }
+            } catch (e) {}
+            return res;
+          });
+        };
+        function renderReactionBars() {
+          var bubbles = document.querySelectorAll(".bubble");
+          if (!bubbles.length || !lastMessages.length) return;
+          bubbles.forEach(function (bubble) {
+            var bodyText = (bubble.textContent || "").replace(/\[image:\/uploads\/[^\]]+\]/g, "").trim();
+            var match = null;
+            for (var i = lastMessages.length - 1; i >= 0; i--) {
+              var mb = (lastMessages[i].body || "").replace(/\[image:\/uploads\/[^\]]+\]/g, "").trim();
+              if (mb === bodyText || (bodyText === "" && lastMessages[i].imageUrl) ||
+                  (mb.length > 5 && bodyText.indexOf(mb.slice(0, 40)) === 0)) {
+                match = lastMessages[i]; break;
+              }
+            }
+            if (!match) return;
+            var wrap = bubble.parentElement;
+            if (!wrap) return;
+            wrap.classList.add("huddle-msg-wrap");
+            wrap.dataset.msgId = String(match.id);
+            var bar = wrap.querySelector(".huddle-reacts");
+            if (!bar) {
+              bar = document.createElement("div");
+              bar.className = "huddle-reacts";
+              if (bubble.nextSibling) wrap.insertBefore(bar, bubble.nextSibling);
+              else wrap.appendChild(bar);
+            }
+            var reactions = reactionCache[match.id] || match.reactions || [];
+            var html = "";
+            reactions.forEach(function (r) {
+              html += '<button type="button" class="huddle-react-pill" data-emoji="' + r.emoji + '">' + r.emoji + ' <span>' + r.count + '</span></button>';
+            });
+            html += '<button type="button" class="huddle-react-pill huddle-react-add" title="Add reaction">+</button>';
+            bar.innerHTML = html;
+            bar.querySelectorAll(".huddle-react-pill").forEach(function (pill) {
+              pill.onclick = function (e) {
+                e.preventDefault(); e.stopPropagation();
+                var emoji = pill.getAttribute("data-emoji");
+                if (!emoji) { openPicker(wrap, match.id); return; }
+                toggleReact(match.id, emoji);
+              };
+            });
+          });
+          document.querySelectorAll(".bubble").forEach(function (bubble) {
+            if (bubble.dataset.imgDone) return;
+            var text = bubble.textContent || "";
+            var m = text.match(/\[image:(\/uploads\/[a-zA-Z0-9._-]+)\]/);
+            if (!m) return;
+            bubble.dataset.imgDone = "1";
+            bubble.textContent = text.replace(m[0], "").trim();
+            var img = document.createElement("img");
+            img.className = "huddle-msg-img"; img.src = m[1]; img.alt = "image"; img.loading = "lazy";
+            bubble.appendChild(img);
+          });
+        }
+        function openPicker(wrap, msgId) {
+          var existing = wrap.querySelector(".huddle-react-picker");
+          if (existing) { existing.remove(); return; }
+          var picker = document.createElement("div");
+          picker.className = "huddle-react-picker";
+          REACT_EMOJIS.forEach(function (em) {
+            var b = document.createElement("button");
+            b.type = "button"; b.textContent = em;
+            b.onclick = function (e) { e.stopPropagation(); picker.remove(); toggleReact(msgId, em); };
+            picker.appendChild(b);
+          });
+          wrap.appendChild(picker);
+          setTimeout(function () {
+            document.addEventListener("click", function once() {
+              picker.remove();
+              document.removeEventListener("click", once);
+            });
+          }, 0);
+        }
+        async function toggleReact(msgId, emoji) {
+          var profile = getProfile();
+          if (!profile || !profile.token) { alert("Set up your profile first."); return; }
+          var slug = roomSlug();
+          if (!slug) return;
+          try {
+            var res = await fetch("/api/rooms/" + encodeURIComponent(slug) + "/messages/" + msgId + "/reactions", {
+              method: "POST",
+              headers: { "content-type": "application/json", authorization: "Bearer " + profile.token },
+              body: JSON.stringify({ emoji: emoji })
+            });
+            var data = await res.json().catch(function () { return {}; });
+            if (!res.ok) throw new Error(data.error || "Could not react");
+            reactionCache[msgId] = data.reactions || [];
+            for (var i = 0; i < lastMessages.length; i++) if (lastMessages[i].id === msgId) lastMessages[i] = data;
+            renderReactionBars();
+          } catch (e) { alert(e.message || "Could not react"); }
+        }
+        function attachUploadButton() {
+          document.querySelectorAll(".composer").forEach(function (composer) {
+            if (composer.querySelector(".huddle-img-btn")) return;
+            var input = composer.querySelector(".input, textarea, input");
+            var send = composer.querySelector(".send");
+            if (!input || !send) return;
+            var btn = document.createElement("button");
+            btn.type = "button"; btn.className = "huddle-img-btn"; btn.title = "Send image"; btn.textContent = "🖼";
+            var file = document.createElement("input");
+            file.type = "file"; file.accept = "image/png,image/jpeg,image/webp,image/gif,image/*"; file.style.display = "none";
+            btn.onclick = function () { file.click(); };
+            file.onchange = async function () {
+              var f = file.files && file.files[0]; file.value = "";
+              if (!f) return;
+              if (!/^image\//.test(f.type)) { alert("Please choose an image."); return; }
+              if (f.size > 2.5 * 1024 * 1024) { alert("Image must be under 2.5MB."); return; }
+              if (Date.now() - lastSend < COOLDOWN) { alert("Wait a few seconds."); return; }
+              var profile = getProfile();
+              if (!profile || !profile.token) { alert("Set up your profile first."); return; }
+              btn.disabled = true;
+              try {
+                var dataUrl = await new Promise(function (resolve, reject) {
+                  var r = new FileReader(); r.onload = function () { resolve(r.result); }; r.onerror = reject; r.readAsDataURL(f);
+                });
+                var up = await fetch("/api/upload", {
+                  method: "POST",
+                  headers: { "content-type": "application/json", authorization: "Bearer " + profile.token },
+                  body: JSON.stringify({ dataUrl: dataUrl })
+                });
+                var uj = await up.json().catch(function () { return {}; });
+                if (!up.ok) throw new Error(uj.error || "Upload failed");
+                var slug = roomSlug();
+                if (!slug) throw new Error("Open a room first.");
+                var caption = (input.value || "").trim();
+                var body = caption ? (caption + "\n[image:" + uj.url + "]") : ("[image:" + uj.url + "]");
+                var res = await fetch("/api/rooms/" + encodeURIComponent(slug) + "/messages", {
+                  method: "POST",
+                  headers: { "content-type": "application/json", authorization: "Bearer " + profile.token },
+                  body: JSON.stringify({ body: body, imageUrl: uj.url })
+                });
+                var jj = await res.json().catch(function () { return {}; });
+                if (!res.ok) throw new Error(jj.error || "Send failed");
+                lastSend = Date.now();
+                if (input.value !== undefined) input.value = "";
+              } catch (e) { alert(e.message || "Could not send image"); }
+              finally { btn.disabled = false; }
+            };
+            composer.insertBefore(btn, send);
+            composer.appendChild(file);
+          });
+        }
+        function tick() { ensureThemeBtn(); attachUploadButton(); renderReactionBars(); }
+        setInterval(tick, 700);
+        if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", tick);
+        else tick();
+      })();
+    </script>
   </head>
   <body><div id="root"></div></body>
 </html>
