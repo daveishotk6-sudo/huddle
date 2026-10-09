@@ -7,12 +7,19 @@ function createGame(type, roomId, hostId) {
   if (type === "tictactoe") { base.board = Array(9).fill(null); base.turn = hostId; }
   else if (type === "connect4") { base.board = Array(6).fill(null).map(() => Array(7).fill(null)); base.turn = hostId; }
   else if (type === "rps") { base.choices = {}; base.round = 1; base.scores = {}; base.scores[hostId] = 0; }
+  else if (type === "fight") {
+    base.hp = {}; base.hp[hostId] = 100;
+    base.choices = {};
+    base.round = 1;
+    base.lastResult = null;
+    base.maxHp = 100;
+  }
   return base;
 }
 function publicGame(g) {
   const host = db.users.find((u) => u.id === g.hostId);
   const guest = g.guestId ? db.users.find((u) => u.id === g.guestId) : null;
-  return { id: g.id, type: g.type, roomId: g.roomId, status: g.status, hostId: g.hostId, guestId: g.guestId, hostName: host ? host.handle : "?", guestName: guest ? guest.handle : null, turn: g.turn || null, board: g.board || null, choices: g.choices || null, scores: g.scores || null, round: g.round || null, winnerId: g.winnerId, createdAt: g.createdAt, updatedAt: g.updatedAt };
+  return { id: g.id, type: g.type, roomId: g.roomId, status: g.status, hostId: g.hostId, guestId: g.guestId, hostName: host ? host.handle : "?", guestName: guest ? guest.handle : null, turn: g.turn || null, board: g.board || null, choices: g.choices || null, scores: g.scores || null, round: g.round || null, hp: g.hp || null, lastResult: g.lastResult || null, maxHp: g.maxHp || 100, winnerId: g.winnerId, createdAt: g.createdAt, updatedAt: g.updatedAt };
 }
 function checkTicTacToe(board) {
   const lines = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
@@ -86,6 +93,54 @@ function applyMove(game, userId, move) {
         game.status = "done";
         game.winnerId = game.scores[game.hostId] >= 3 ? game.hostId : game.guestId;
       } else { game.round = (game.round || 1) + 1; game.choices = {}; }
+    }
+    return;
+  }
+  if (game.type === "fight") {
+    const choice = String(move || "").toLowerCase();
+    if (!["punch", "block"].includes(choice)) throw new HttpError(400, "Pick punch or block.");
+    if (game.status !== "active") throw new HttpError(400, "Game is not active.");
+    if (!game.guestId) throw new HttpError(400, "Waiting for opponent.");
+    if (!game.choices) game.choices = {};
+    if (!game.hp) game.hp = {};
+    if (game.hp[game.hostId] == null) game.hp[game.hostId] = 100;
+    if (game.hp[game.guestId] == null) game.hp[game.guestId] = 100;
+    const uid = Number(userId);
+    if (game.choices[uid] || game.choices[userId]) throw new HttpError(400, "You already chose this round.");
+    game.choices[uid] = choice;
+    game.choices[userId] = choice;
+    const hostC = game.choices[game.hostId] || game.choices[Number(game.hostId)];
+    const guestC = game.choices[game.guestId] || game.choices[Number(game.guestId)];
+    if (hostC && guestC) {
+      let hostDmg = 0, guestDmg = 0;
+      let text = "";
+      if (hostC === "punch" && guestC === "punch") {
+        hostDmg = 18; guestDmg = 18;
+        text = "Both punched! −18 HP each";
+      } else if (hostC === "punch" && guestC === "block") {
+        guestDmg = 6;
+        text = "Host punches — Guest blocks (only −6)";
+      } else if (hostC === "block" && guestC === "punch") {
+        hostDmg = 6;
+        text = "Guest punches — Host blocks (only −6)";
+      } else {
+        text = "Both blocked — no damage";
+      }
+      game.hp[game.hostId] = Math.max(0, (game.hp[game.hostId] || 100) - guestDmg);
+      game.hp[game.guestId] = Math.max(0, (game.hp[game.guestId] || 100) - hostDmg);
+      game.hp[Number(game.hostId)] = game.hp[game.hostId];
+      game.hp[Number(game.guestId)] = game.hp[game.guestId];
+      game.lastResult = text;
+      if (game.hp[game.hostId] <= 0 && game.hp[game.guestId] <= 0) {
+        game.status = "done"; game.winnerId = "draw";
+      } else if (game.hp[game.hostId] <= 0) {
+        game.status = "done"; game.winnerId = game.guestId;
+      } else if (game.hp[game.guestId] <= 0) {
+        game.status = "done"; game.winnerId = game.hostId;
+      } else {
+        game.round = (game.round || 1) + 1;
+        game.choices = {};
+      }
     }
     return;
   }
