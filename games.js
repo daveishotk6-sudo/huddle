@@ -378,10 +378,30 @@
       var m = text.match(/\[image:(\/uploads\/[a-zA-Z0-9._-]+)\]/);
       if (!m) return;
       bubble.dataset.imgDone = "1";
-      bubble.textContent = text.replace(m[0], "").trim();
+      var rest = text.replace(m[0], "").trim();
+      bubble.textContent = rest;
+      // Reserve space so the chat doesn't jump when the image loads
+      var holder = document.createElement("div");
+      holder.className = "huddle-img-holder";
+      holder.style.cssText = "min-height:140px;min-width:120px;max-width:min(240px,70vw);";
       var img = document.createElement("img");
-      img.className = "huddle-msg-img"; img.src = m[1]; img.alt = "image"; img.loading = "lazy";
-      bubble.appendChild(img);
+      img.className = "huddle-msg-img";
+      img.src = m[1];
+      img.alt = "image";
+      img.loading = "lazy";
+      img.style.cssText = "max-width:100%;border-radius:14px;display:block;margin-top:4px;";
+      var scroller = bubble.closest(".messages") || bubble.closest(".chat") || document.querySelector(".messages");
+      var nearBottom = false;
+      if (scroller) {
+        nearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 100;
+      }
+      img.onload = function () {
+        holder.style.minHeight = "";
+        if (nearBottom && scroller) scroller.scrollTop = scroller.scrollHeight;
+      };
+      img.onerror = function () { holder.style.minHeight = ""; };
+      holder.appendChild(img);
+      bubble.appendChild(holder);
     });
   }
   var orig = window.fetch;
