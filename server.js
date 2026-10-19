@@ -82,9 +82,15 @@ function createRoom(name, emoji, description) {
   db.rooms.push(room); return room;
 }
 const publicRoom = (r) => ({ id: r.id, slug: r.slug, name: r.name, emoji: r.emoji, description: r.description });
-function publicMessage(m) {
+function publicMessage(m, forPreview) {
   const u = db.users.find((x) => x.id === m.userId);
-  return { id: m.id, roomId: m.roomId, userId: m.userId, author: u ? u.handle : (m.author || "deleted"), realName: u ? u.realName : (m.realName || ""), nicknames: u ? u.nicknames : (m.nicknames || ""), color: u ? u.color : (m.color || "#7a7366"), isAdmin: !!(u && u.isAdmin), isAI: !!(u && u.isAI), body: m.body, imageUrl: m.imageUrl || null, gameId: m.gameId || null, createdAt: m.createdAt };
+  let body = m.body || "";
+  // Room-list preview: don't show raw [image:/uploads/...] markers
+  if (forPreview && (m.imageUrl || /\[image:\//.test(body))) {
+    body = body.replace(/\[image:[^\]]+\]/g, "").trim();
+    if (!body) body = "📷 Photo";
+  }
+  return { id: m.id, roomId: m.roomId, userId: m.userId, author: u ? u.handle : (m.author || "deleted"), realName: u ? u.realName : (m.realName || ""), nicknames: u ? u.nicknames : (m.nicknames || ""), color: u ? u.color : (m.color || "#7a7366"), isAdmin: !!(u && u.isAdmin), isAI: !!(u && u.isAI), body, imageUrl: m.imageUrl || null, gameId: m.gameId || null, createdAt: m.createdAt };
 }
 function authUser(req) {
   const m = /^Bearer\s+([A-Za-z0-9_-]{20,100})$/.exec(req.headers.authorization || "");
@@ -320,14 +326,15 @@ async function handleApi(req, res, url) {
   if (parts[0] === "rooms" && parts.length === 1) {
     if (method === "GET") {
       const now = Date.now();
-      const active = new Set();
-      for (const m of db.messages) {
-        if (now - new Date(m.createdAt).getTime() <= ACTIVE_WINDOW_MS && m.userId) active.add(m.userId);
-      }
       const rooms = db.rooms.map((r) => {
         const msgs = db.messages.filter((m) => m.roomId === r.id);
         const last = msgs.length ? msgs[msgs.length - 1] : null;
-        return Object.assign(publicRoom(r), { activeCount: active.size, lastMessage: last ? publicMessage(last) : null });
+        // Per-room active users (recent messages in THIS room only) so badges don't light up everywhere
+        const roomActive = new Set();
+        for (const m of msgs) {
+          if (now - new Date(m.createdAt).getTime() <= ACTIVE_WINDOW_MS && m.userId) roomActive.add(m.userId);
+        }
+        return Object.assign(publicRoom(r), { activeCount: roomActive.size, lastMessage: last ? publicMessage(last, true) : null });
       });
       return send(res, 200, rooms);
     }
@@ -348,7 +355,7 @@ async function handleApi(req, res, url) {
       const after = Number(url.searchParams.get("after")) || 0;
       let msgs = db.messages.filter((m) => m.roomId === room.id && m.id > after);
       if (after === 0) msgs = msgs.slice(-INITIAL_MESSAGES);
-      return send(res, 200, { room: publicRoom(room), messages: msgs.slice(0, 200).map(publicMessage) });
+      return send(res, 200, msgs.map((m) => publicMessage(m)));
     }
     if (method === "POST") {
       const user = authUser(req);
@@ -381,40 +388,54 @@ function resolveStatic(rel) {
   return null;
 }
 function serveStatic(req, res, url) {
-  if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, { error: "Method not allowed." });
   let rel = decodeURIComponent(url.pathname);
-  if (rel === "/admin" || rel === "/admin/") rel = "/admin.html";
-  let isAsset = rel.startsWith("/assets/");
-  let file = resolveStatic(rel);
-  if (!file) { if (isAsset || path.extname(rel)) return send(res, 404, "Not found", { "Content-Type": "text/plain" }); file = resolveStatic("/index.html") || path.join(PUBLIC_DIR, "index.html"); isAsset = false; }
-  const ext = path.extname(file).toLowerCase();
-  res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream", "Cache-Control": isAsset ? "public, max-age=31536000, immutable" : "no-cache" });
-  if (req.method === "HEAD") return res.end();
-  fs.createReadStream(file).pipe(res);
+  if (rel === "/" || rel === "") rel = "/index.html";
+  if (rel.startsWith("/uploads/")) {
+    const name = path.basename(rel);
+    const file = path.join(UPLOAD_DIR, name);
+    if (fs.existsSync(file) && fs.statSync(file).isFile()) {
+      const ext = path.extname(name).toLowerCase();
+      res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream", "Cache-Control": "public, max-age=86400" });
+      fs.createReadStream(file).pipe(res);
+      return true;
+    }
+    res.writeHead(404); res.end("Not found"); return true;
+  }
+  if (rel === "/admin" || rel === "/admin/") {
+    const admin = resolveStatic("/admin.html");
+    if (admin) { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }); fs.createReadStream(admin).pipe(res); return true; }
+  }
+  const file = resolveStatic(rel);
+  if (file) {
+    const ext = path.extname(file).toLowerCase();
+    res.writeHead(200, { "Content-Type": MIME[ext] || "application/octet-stream", "Cache-Control": ext === ".html" ? "no-store" : "public, max-age=3600" });
+    fs.createReadStream(file).pipe(res);
+    return true;
+  }
+  // SPA fallback
+  if (!rel.startsWith("/api")) {
+    const index = resolveStatic("/index.html");
+    if (index) { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }); fs.createReadStream(index).pipe(res); return true; }
+  }
+  return false;
 }
 const server = http.createServer(async (req, res) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
   try {
-    const url = new URL(req.url, "http://localhost");
-    if (url.pathname === "/health") return send(res, 200, { ok: true });
-    if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url);
-    if (url.pathname.startsWith("/uploads/")) {
-      const name = path.basename(url.pathname);
-      if (!/^[a-zA-Z0-9._-]+$/.test(name)) return send(res, 404, { error: "Not found." });
-      const file = path.join(UPLOAD_DIR, name);
-      if (!fs.existsSync(file)) return send(res, 404, { error: "Not found." });
-      const ext = path.extname(file).toLowerCase();
-      const mime = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" }[ext] || "application/octet-stream";
-      res.writeHead(200, { "Content-Type": mime, "Cache-Control": "public, max-age=86400" });
-      return fs.createReadStream(file).pipe(res);
+    const url = new URL(req.url || "/", "http://" + (req.headers.host || "localhost"));
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+    if (url.pathname.startsWith("/api/")) {
+      try { await handleApi(req, res, url); } catch (e) {
+        const status = e instanceof HttpError ? e.status : 500;
+        if (status >= 500) console.error(e);
+        send(res, status, { error: e.message || "Server error" });
+      }
+      return;
     }
-    return serveStatic(req, res, url);
-  } catch (e) {
-    const status = e.status || 500;
-    if (status >= 500) console.error(e);
-    return send(res, status, { error: e.message || "Server error." });
-  }
+    if (!serveStatic(req, res, url)) { res.writeHead(404); res.end("Not found"); }
+  } catch (e) { console.error(e); try { res.writeHead(500); res.end("Server error"); } catch (e2) {} }
 });
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
