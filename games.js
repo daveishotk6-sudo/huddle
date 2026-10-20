@@ -70,6 +70,7 @@
       '<button type="button" class="huddle-game-btn" data-type="connect4">🔴 Connect Four</button>' +
       '<button type="button" class="huddle-game-btn" data-type="rps">✊ Rock Paper Scissors</button>' +
       '<button type="button" class="huddle-game-btn" data-type="fight">🥊 Fight</button>' +
+      '<button type="button" class="huddle-game-btn" data-type="uno">🃏 UNO</button>' +
       "</div>" +
       '<h3 style="margin:16px 0 4px;font-size:14px;opacity:.7">Open games</h3>' +
       '<div id="huddle-open-games">Loading…</div>' +
@@ -201,13 +202,13 @@
     var wrap = document.getElementById("huddle-board");
     if (!wrap) return;
     try {
-      var res = await fetch("/api/games/" + id);
+      var res = await fetch("/api/games/" + id, { headers: authHeaders() });
       var g = await res.json();
       if (!res.ok) throw new Error(g.error || "Gone");
       var card = wrap.querySelector(".huddle-board-card");
       var status = g.status === "waiting" ? "Waiting for opponent… (they open Games → Join)" :
         g.status === "done" ? (g.winnerId === "draw" ? "Draw!" : "Game over") : "In progress";
-      var title = ({ tictactoe: "Tic-Tac-Toe", connect4: "Connect Four", rps: "Rock Paper Scissors", fight: "Fight" })[g.type] || g.type;
+      var title = ({ tictactoe: "Tic-Tac-Toe", connect4: "Connect Four", rps: "Rock Paper Scissors", fight: "Fight", uno: "UNO" })[g.type] || g.type;
       var html = '<button class="close" type="button" style="float:right;border:0;background:transparent;font-size:22px;cursor:pointer;color:inherit">×</button>';
       html += '<h2 style="margin:0 0 4px;font-size:18px">' + title + "</h2>";
       html += '<div class="huddle-status">' + (g.hostName || "") + (g.guestName ? (" vs " + g.guestName) : "") + " · " + status + "</div>";
@@ -261,6 +262,73 @@
           html += '</div>';
           html += '<p class="huddle-status">Both choose each round. Punch vs Block = weak hit. Both punch = big damage.</p>';
         }
+      } else if (g.type === "uno") {
+        var uno = g.uno || {};
+        var colName = { r: "Red", y: "Yellow", g: "Green", b: "Blue", w: "Wild" };
+        function unoLabel(c) {
+          if (!c) return "";
+          var v = c.value;
+          if (v === "skip") return "Skip";
+          if (v === "rev") return "Rev";
+          if (v === "d2") return "+2";
+          if (v === "d4") return "+4";
+          if (v === "wild") return "Wild";
+          return v;
+        }
+        function unoCardHtml(c, extra) {
+          return '<button type="button" class="uno-card ' + (c.color || "w") + '" ' + extra + '>' + unoLabel(c) + '</button>';
+        }
+        var myId = myUserId();
+        var myTurn = myId != null && Number(g.turn) === myId && g.status === "active";
+        html += '<div class="huddle-status">Color: <b>' + (colName[uno.color] || "?") + '</b> · Deck ' + (uno.deck || 0) + '</div>';
+        html += '<div class="huddle-status">' + (g.hostName || "Host") + " " + (uno.hostCount || 0) + " cards · " + (g.guestName || "Guest") + " " + (uno.guestCount || 0) + " cards</div>";
+        if (uno.last) html += '<div class="huddle-status">' + uno.last + "</div>";
+        if (myTurn) html += '<div class="huddle-status">Your turn</div>';
+        else if (g.status === "active") html += '<div class="huddle-status">Waiting for the other player…</div>';
+        if (uno.top) {
+          var topCls = uno.top.color === "w" ? (uno.color || "w") : uno.top.color;
+          html += '<div class="uno-top-wrap"><div class="uno-card uno-top ' + topCls + '">' + unoLabel(uno.top) + '</div></div>';
+        }
+        var pending = wrap.dataset.unoWild || "";
+        var hand = uno.myHand || [];
+        var inGame = myId != null && (Number(g.hostId) === myId || (g.guestId != null && Number(g.guestId) === myId));
+        if (!hand.length && g.status === "waiting") {
+          html += '<p class="huddle-status">Waiting for someone to join before cards are dealt.</p>';
+        } else if (myId == null) {
+          html += '<p class="huddle-status">Set up your profile to see your hand.</p>';
+        } else if (!inGame) {
+          html += '<p class="huddle-status">Spectating — hands stay hidden.</p>';
+        } else {
+          html += '<div class="uno-row">';
+          for (var ui = 0; ui < hand.length; ui++) {
+            var cd = hand[ui];
+            var can = false;
+            if (myTurn) {
+              if (uno.drawn && uno.drawnId) can = cd.id === uno.drawnId;
+              else if (cd.color === "w" || cd.color === uno.color || (uno.top && cd.value === uno.top.value && uno.top.color !== "w" && cd.value !== "wild" && cd.value !== "d4")) can = true;
+            }
+            var attrs = 'data-uno="' + cd.id + '" data-wild="' + (cd.color === "w" ? "1" : "0") + '"';
+            if (!can) attrs += ' disabled';
+            html += '<button type="button" class="uno-card ' + cd.color + (can ? "" : " off") + (pending === cd.id ? " pick" : "") + '" ' + attrs + '>' + unoLabel(cd) + '</button>';
+          }
+          html += '</div>';
+          if (myTurn && pending) {
+            html += '<div class="uno-colors">';
+            html += '<button type="button" data-unocolor="r" class="uno-card r">Red</button>';
+            html += '<button type="button" data-unocolor="y" class="uno-card y">Yellow</button>';
+            html += '<button type="button" data-unocolor="g" class="uno-card g">Green</button>';
+            html += '<button type="button" data-unocolor="b" class="uno-card b">Blue</button>';
+            html += '</div>';
+            html += '<p class="huddle-status">Pick a color for the wild.</p>';
+          }
+          if (myTurn) {
+            html += '<div class="rps-row">';
+            if (!uno.drawn) html += '<button type="button" data-unoact="draw" class="fight-btn block">Draw</button>';
+            else html += '<button type="button" data-unoact="pass" class="fight-btn punch">Pass</button>';
+            html += '</div>';
+            html += '<p class="huddle-status">Match the color or the number. Skip and Reverse let you go again. +2 / +4 make them draw and skip.</p>';
+          }
+        }
       }
       if (g.status === "done") {
         html += '<p class="huddle-status">Winner: ' + (g.winnerId === "draw" ? "Draw" : (Number(g.winnerId) === Number(g.hostId) ? g.hostName : g.guestName)) + "</p>";
@@ -284,6 +352,33 @@
       });
       card.querySelectorAll("[data-fight]").forEach(function (btn) {
         btn.onclick = function () { sendMove(id, btn.getAttribute("data-fight")); };
+      });
+      card.querySelectorAll("[data-uno]").forEach(function (btn) {
+        btn.onclick = function () {
+          if (btn.disabled) return;
+          var cid = btn.getAttribute("data-uno");
+          if (btn.getAttribute("data-wild") === "1") {
+            wrap.dataset.unoWild = cid;
+            renderBoard(id);
+            return;
+          }
+          wrap.dataset.unoWild = "";
+          sendMove(id, "c:" + cid);
+        };
+      });
+      card.querySelectorAll("[data-unocolor]").forEach(function (btn) {
+        btn.onclick = function () {
+          var cid = wrap.dataset.unoWild;
+          var col = btn.getAttribute("data-unocolor");
+          wrap.dataset.unoWild = "";
+          if (cid) sendMove(id, "c:" + cid + ":" + col);
+        };
+      });
+      card.querySelectorAll("[data-unoact]").forEach(function (btn) {
+        btn.onclick = function () {
+          wrap.dataset.unoWild = "";
+          sendMove(id, btn.getAttribute("data-unoact"));
+        };
       });
     } catch (e) {
       wrap.querySelector(".huddle-board-card").innerHTML = "<p>Game unavailable.</p>";

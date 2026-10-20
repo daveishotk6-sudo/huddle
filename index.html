@@ -62,11 +62,18 @@ html[data-theme=dark] .fight-bar{background:#3d392f}
 html[data-theme=dark] .fight-btn{background:#2a2720;border-color:#3d392f;color:#f0ebe3}
 .fight-btn.punch{background:#ff5a36;color:#fff;border-color:#ff5a36}
 .fight-btn.block{background:#1c7ed6;color:#fff;border-color:#1c7ed6}
+.uno-row,.uno-colors{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin:10px 0}
+.uno-card{min-width:54px;height:74px;border-radius:10px;border:2px solid rgba(0,0,0,.35);color:#fff;font-weight:800;font-size:14px;cursor:pointer;padding:4px}
+.uno-card.r{background:#e03131}.uno-card.y{background:#f59f00;color:#1c1a16}.uno-card.g{background:#2f9e44}.uno-card.b{background:#1971c2}.uno-card.w{background:#1c1a16;color:#fff}
+.uno-card.off{opacity:.38;cursor:default}.uno-card.pick{outline:3px solid #ff5a36}
+.uno-top-wrap{display:flex;justify-content:center;margin:8px 0}
+.uno-card.uno-top{width:72px;height:100px;font-size:18px;cursor:default}
+.huddle-board-card{width:min(420px,100%)}
 </style>
 <script>(function(){var o=window.fetch;window.fetch=function(){return o.apply(this,arguments).then(function(res){if(res.status===401){try{localStorage.removeItem("huddle:profile")}catch(e){}location.reload()}return res})}})();</script>
 <script type="module" crossorigin src="/assets/index-Cklpbby4.js"></script>
 <link rel="stylesheet" crossorigin href="/assets/index-DLUjAQq1.css">
-<script src="/games.js"></script>
+<script src="/games.js?v=uno1"></script>
 </head>
 <body><div id="root"></div></body>
 </html>

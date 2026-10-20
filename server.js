@@ -237,15 +237,15 @@ async function handleApi(req, res, url) {
       const room = roomSlug ? db.rooms.find((r) => r.slug === roomSlug) : null;
       let list = (db.games || []).filter((g) => g.status !== "done" && g.status !== "cancelled");
       if (room) list = list.filter((g) => g.roomId === room.id);
-      return send(res, 200, list.map(gamesLogic.publicGame));
+      return send(res, 200, list.map((g) => gamesLogic.publicGame(g)));
     }
     if (parts.length === 1 && method === "POST") {
       const user = authUser(req);
       rateLimit(req, "game", 20, 60 * 1000);
       const b = await readJson(req);
       const type = String(b.type || "").toLowerCase();
-      const TYPES = { tictactoe: "Tic-Tac-Toe", connect4: "Connect Four", rps: "Rock Paper Scissors", fight: "Fight" };
-      if (!TYPES[type]) throw new HttpError(400, "Unknown game. Try tictactoe, connect4, rps, or fight.");
+      const TYPES = { tictactoe: "Tic-Tac-Toe", connect4: "Connect Four", rps: "Rock Paper Scissors", fight: "Fight", uno: "UNO" };
+      if (!TYPES[type]) throw new HttpError(400, "Unknown game. Try tictactoe, connect4, rps, fight, or uno.");
       const room = db.rooms.find((r) => r.slug === String(b.roomSlug || ""));
       if (!room) throw new HttpError(400, "Open a room first, then start a game.");
       for (const g of (db.games || [])) { if (g.roomId === room.id && g.hostId === user.id && g.status === "waiting") g.status = "cancelled"; }
@@ -258,7 +258,9 @@ async function handleApi(req, res, url) {
     if (parts.length === 2 && method === "GET") {
       const game = (db.games || []).find((g) => Number(g.id) === Number(parts[1]));
       if (!game) throw new HttpError(404, "Game not found.");
-      return send(res, 200, gamesLogic.publicGame(game));
+      let viewer = null;
+      try { viewer = authUser(req); } catch (e) {}
+      return send(res, 200, gamesLogic.publicGame(game, viewer && viewer.id));
     }
     if (parts.length === 3 && parts[2] === "join" && method === "POST") {
       const user = authUser(req);
@@ -267,15 +269,16 @@ async function handleApi(req, res, url) {
       const uid = Number(user.id);
       const hostId = Number(game.hostId);
       const guestId = game.guestId != null ? Number(game.guestId) : null;
-      if (uid === hostId || (guestId != null && uid === guestId)) return send(res, 200, gamesLogic.publicGame(game));
+      if (uid === hostId || (guestId != null && uid === guestId)) return send(res, 200, gamesLogic.publicGame(game, uid));
       if (game.status === "active" || game.status === "done" || game.status === "cancelled") throw new HttpError(400, "This game already started or ended.");
       if (game.status !== "waiting") throw new HttpError(400, "This game already started or ended.");
       if (guestId != null) throw new HttpError(400, "Someone already joined.");
       game.guestId = uid; game.status = "active"; game.updatedAt = new Date().toISOString();
       if (game.type === "rps") { if (!game.scores) game.scores = {}; game.scores[hostId] = game.scores[hostId] || 0; game.scores[uid] = 0; }
       if (game.type === "fight") { if (!game.hp) game.hp = {}; game.hp[hostId] = game.hp[hostId] != null ? game.hp[hostId] : 100; game.hp[uid] = 100; game.choices = {}; game.round = game.round || 1; }
+      if (game.type === "uno" && gamesLogic.onJoin) gamesLogic.onJoin(game);
       try { const room = db.rooms.find((r) => r.id === game.roomId); if (room) { const notice = { id: db.nextMessageId++, roomId: room.id, userId: user.id, body: "✅ Joined game #" + game.id + " — open Games → Play", imageUrl: null, gameId: game.id, createdAt: new Date().toISOString() }; db.messages.push(notice); } } catch (e) {}
-      saveSoon(); return send(res, 200, gamesLogic.publicGame(game));
+      saveSoon(); return send(res, 200, gamesLogic.publicGame(game, uid));
     }
     if (parts.length === 3 && parts[2] === "move" && method === "POST") {
       const user = authUser(req);
@@ -287,7 +290,7 @@ async function handleApi(req, res, url) {
       const b = await readJson(req);
       gamesLogic.applyMove(game, user.id, b.move);
       game.updatedAt = new Date().toISOString(); saveSoon();
-      return send(res, 200, gamesLogic.publicGame(game));
+      return send(res, 200, gamesLogic.publicGame(game, uid));
     }
     if (parts.length === 3 && parts[2] === "cancel" && method === "POST") {
       const user = authUser(req);
